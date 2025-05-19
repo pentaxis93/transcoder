@@ -5,6 +5,7 @@ import subprocess
 import argparse
 import logging
 import json
+import shlex
 from pathlib import Path
 from datetime import datetime
 
@@ -104,31 +105,55 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
     print(f"Starting transcoding of file #{index}/{total}")
 
     # Get original metadata and file size
-    original_size = os.path.getsize(input_file)
-    metadata = get_video_metadata(input_file, file_logger)
-    orig_width, orig_height = get_resolution(metadata)
+    try:
+        original_size = os.path.getsize(input_file)
+        metadata = get_video_metadata(input_file, file_logger)
+        orig_width, orig_height = get_resolution(metadata)
 
-    # Log original video details for diagnostics
-    file_logger.info(f"Original video resolution: {orig_width}x{orig_height}")
-    file_logger.info(f"Original video size: {original_size/1024/1024:.2f} MB")
+        # Log original video details for diagnostics
+        file_logger.info(
+            f"Original video resolution: {orig_width}x{orig_height}")
+        file_logger.info(
+            f"Original video size: {original_size/1024/1024:.2f} MB")
+    except Exception as e:
+        file_logger.error(f"Error getting file information: {str(e)}")
+        console_logger.error(f"Error getting file information: {str(e)}")
+        print(f"Error getting file information: {str(e)}")
+        return False
 
-    # Construct the ffmpeg command
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+    # Construct the ffmpeg command - using a list for better handling of special characters
     cmd = [
-        "ffmpeg", "-i", input_file,
-        "-map", "0:v:0", "-map", "0:a:0?",
-        "-c:v", "libx265", "-preset", "veryslow", "-crf", "28",
-        "-vf", "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,setsar=1", "-r", "24",
-        "-c:a", "aac", "-b:a", "64k", "-ac", "1", "-ar", "44100",
-        "-pix_fmt", "yuv420p", "-profile:v", "main", "-level", "3.1",
-        "-movflags", "+faststart", "-tune", "film",
-        "-metadata", "title=", "-metadata", "comment=", "-tag:v", "hvc1",
+        "ffmpeg",
+        "-i", input_file,
+        "-map", "0:v:0",
+        "-map", "0:a:0?",
+        "-c:v", "libx265",
+        "-preset", "veryslow",
+        "-crf", "28",
+        "-vf", "scale=min(1280,iw):min(720,ih):force_original_aspect_ratio=decrease,setsar=1",
+        "-r", "24",
+        "-c:a", "aac",
+        "-b:a", "64k",
+        "-ac", "1",
+        "-ar", "44100",
+        "-pix_fmt", "yuv420p",
+        "-profile:v", "main",
+        "-level", "3.1",
+        "-movflags", "+faststart",
+        "-tune", "film",
+        "-metadata", "title=",
+        "-metadata", "comment=",
+        "-tag:v", "hvc1",
         output_file
     ]
 
     # Log the ffmpeg command for diagnostics (without the actual filename)
-    cmd_log = ' '.join(cmd)
-    cmd_log = cmd_log.replace(input_file, "INPUT_FILE").replace(
-        output_file, "OUTPUT_FILE")
+    cmd_log = ' '.join([shlex.quote(str(arg)) for arg in cmd])
+    cmd_log = cmd_log.replace(shlex.quote(input_file), "INPUT_FILE").replace(
+        shlex.quote(output_file), "OUTPUT_FILE")
     file_logger.info(f"Running ffmpeg command: {cmd_log}")
     console_logger.info(f"Running ffmpeg command for file #{index}")
 
