@@ -18,18 +18,43 @@ def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
-    # Create file handler
+    # Create file handler - full details including filenames
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.INFO)
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
 
-    # Create console handler
+    # Create console handler - without revealing filenames
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
 
-    # Create formatter
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
+    # Custom filter to hide filenames in console output
+    class FilenameFilter(logging.Filter):
+        def filter(self, record):
+            # Check if the log message might contain a filename
+            msg = record.getMessage()
+
+            # Common patterns in log messages that contain filenames
+            file_patterns = [
+                "Starting transcoding of file #",
+                "Completed file #",
+                "Transcoding failed for file #",
+                "Error transcoding file #",
+                "Copied original file to error directory",
+                "Failed to copy file to error directory"
+            ]
+
+            # If the message contains any of these patterns, don't show it in console
+            if any(pattern in msg for pattern in file_patterns):
+                return False
+            return True
+
+    # Add filter to console handler
+    console_handler.addFilter(FilenameFilter())
+    console_formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(console_formatter)
 
     # Add handlers to logger
     logger.addHandler(file_handler)
