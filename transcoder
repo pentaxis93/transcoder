@@ -91,8 +91,7 @@ def find_video_files(input_dir):
 def transcode_video(input_file, output_file, index, total):
     logging.info(
         f"Starting transcoding of file #{index}/{total}: {os.path.basename(input_file)}")
-    print(
-        f"Starting transcoding of file #{index}/{total}: {os.path.basename(input_file)}")
+    print(f"Starting transcoding of file #{index}/{total}")
 
     # Get original metadata and file size
     original_size = os.path.getsize(input_file)
@@ -148,23 +147,31 @@ def transcode_video(input_file, output_file, index, total):
         new_metadata = get_video_metadata(output_file)
         new_width, new_height = get_resolution(new_metadata)
 
-        # Log the results
-        results = [
-            f"Completed file #{index}/{total}: {os.path.basename(input_file)}",
-            f"  Original resolution: {orig_width}x{orig_height}, New resolution: {new_width}x{new_height}",
-            f"  Original size: {original_size/1024/1024:.2f} MB, New size: {new_size/1024/1024:.2f} MB",
-            f"  Space saved: {savings_bytes/1024/1024:.2f} MB ({savings_percent:.2f}%)"
-        ]
+        # Log the results (full file name in log)
+        logging.info(
+            f"Completed file #{index}/{total}: {os.path.basename(input_file)}")
+        logging.info(
+            f"  Original resolution: {orig_width}x{orig_height}, New resolution: {new_width}x{new_height}")
+        logging.info(
+            f"  Original size: {original_size/1024/1024:.2f} MB, New size: {new_size/1024/1024:.2f} MB")
+        logging.info(
+            f"  Space saved: {savings_bytes/1024/1024:.2f} MB ({savings_percent:.2f}%)")
 
-        for result in results:
-            logging.info(result)
-            print(result)
+        # Terminal output (dummy file name)
+        print(f"Completed file #{index}/{total}")
+        print(
+            f"  Original resolution: {orig_width}x{orig_height}, New resolution: {new_width}x{new_height}")
+        print(
+            f"  Original size: {original_size/1024/1024:.2f} MB, New size: {new_size/1024/1024:.2f} MB")
+        print(
+            f"  Space saved: {savings_bytes/1024/1024:.2f} MB ({savings_percent:.2f}%)")
 
         return True
 
     except Exception as e:
         error_msg = f"Error transcoding file #{index}: {str(e)}"
-        logging.error(error_msg)
+        logging.error(
+            f"Error transcoding file #{index}: {os.path.basename(input_file)} - {str(e)}")
         print(error_msg)
         return False
 
@@ -250,32 +257,34 @@ def main():
             try:
                 with open(video_file, 'rb') as src, open(error_output_file, 'wb') as dst:
                     dst.write(src.read())
-                logger.info(
+                logging.info(
                     f"Copied original file to error directory: {basename}")
+                print(f"Copied file #{i} to error directory")
             except Exception as e:
-                logger.error(
-                    f"Failed to copy file to error directory: {str(e)}")
+                logging.error(
+                    f"Failed to copy file to error directory: {basename} - {str(e)}")
+                print(f"Failed to copy file #{i} to error directory")
 
     # Write successful and failed files to their respective lists
     try:
         with open(success_list_file, 'w') as f:
             f.write('\n'.join(successful_files))
-        logger.info(
+        logging.info(
             f"Wrote list of {len(successful_files)} successful files to {success_list_file}")
-        print(
-            f"Wrote list of {len(successful_files)} successful files to {success_list_file}")
+        print(f"Wrote list of {successful} successful files to file")
     except Exception as e:
-        logger.error(f"Failed to write successful files list: {str(e)}")
+        logging.error(f"Failed to write successful files list: {str(e)}")
+        print("Failed to write successful files list")
 
     try:
         with open(failed_list_file, 'w') as f:
             f.write('\n'.join(failed_files))
-        logger.info(
+        logging.info(
             f"Wrote list of {len(failed_files)} failed files to {failed_list_file}")
-        print(
-            f"Wrote list of {len(failed_files)} failed files to {failed_list_file}")
+        print(f"Wrote list of {failed} failed files to file")
     except Exception as e:
-        logger.error(f"Failed to write failed files list: {str(e)}")
+        logging.error(f"Failed to write failed files list: {str(e)}")
+        print("Failed to write failed files list")
 
     # Calculate total savings
     total_savings = total_original_size - total_new_size
@@ -283,17 +292,23 @@ def main():
         100 if total_original_size > 0 else 0
 
     # Log summary
-    summary_messages = [
-        f"Transcoding completed. {successful} successful, {failed} failed.",
-        f"Total original size: {total_original_size/1024/1024:.2f} MB",
-        f"Total new size: {total_new_size/1024/1024:.2f} MB",
-        f"Total space saved: {total_savings/1024/1024:.2f} MB ({savings_percent:.2f}%)"
-    ]
+    # Detailed info for log file
+    logging.info(
+        f"Transcoding completed. {successful} successful, {failed} failed.")
+    logging.info(
+        f"Total original size: {total_original_size/1024/1024:.2f} MB")
+    logging.info(f"Total new size: {total_new_size/1024/1024:.2f} MB")
+    logging.info(
+        f"Total space saved: {total_savings/1024/1024:.2f} MB ({savings_percent:.2f}%)")
+    logging.info(f"Successful files list: {success_list_file}")
+    logging.info(f"Failed files list: {failed_list_file}")
 
-    for message in summary_messages:
-        logger.info(message)
-        print(message)
-
+    # Generic info for terminal output
+    print(f"Transcoding completed. {successful} successful, {failed} failed.")
+    print(f"Total original size: {total_original_size/1024/1024:.2f} MB")
+    print(f"Total new size: {total_new_size/1024/1024:.2f} MB")
+    print(
+        f"Total space saved: {total_savings/1024/1024:.2f} MB ({savings_percent:.2f}%)")
     print(f"Log file: {log_file}")
     print(f"Successful files list: {success_list_file}")
     print(f"Failed files list: {failed_list_file}")
