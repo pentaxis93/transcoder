@@ -105,7 +105,7 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
 
     # Get original metadata and file size
     original_size = os.path.getsize(input_file)
-    metadata = get_video_metadata(input_file)
+    metadata = get_video_metadata(input_file, file_logger)
     orig_width, orig_height = get_resolution(metadata)
 
     # Construct the ffmpeg command
@@ -155,7 +155,7 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
             100 if original_size > 0 else 0
 
         # Get new metadata
-        new_metadata = get_video_metadata(output_file)
+        new_metadata = get_video_metadata(output_file, file_logger)
         new_width, new_height = get_resolution(new_metadata)
 
         # Log the results (full file name in log file only)
