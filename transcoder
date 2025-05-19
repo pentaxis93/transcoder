@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+import os
+import sys
+import subprocess
+import argparse
+import logging
+import json
+from pathlib import Path
+from datetime import datetime
+
+# Setup logging to both file and console
+def setup_logging():
+    log_file = f"transcode_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    # Configure root logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # Create file handler
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
+
+    # Create console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+
+    # Add handlers to logger
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    return logger, log_file
+
+# Get video file metadata using ffprobe
+def get_video_metadata(video_path):
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return json.loads(result.stdout)
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+        logging.warning(f"Failed to get metadata for {video_path}: {str(e)}")
+        return None
+
+# Function to extract video resolution from metadata
+def get_resolution(metadata):
+    if not metadata:
+        return "unknown", "unknown"
+
+    for stream in metadata.get("streams", []):
+        if stream.get("codec_type") == "video":
+            return stream.get("width", "unknown"), stream.get("height", "unknown")
+
+    return "unknown", "unknown"
+
+# Find all video files in a directory and its subdirectories
+def find_video_files(input_dir):
+    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp']
+    video_files = []
+
+    for root, _, files in os.walk(input_dir):
+        for file in files:
+            if any(file.lower().endswith(ext) for ext in video_extensions):
+                video_files.append(os.path.join(root, file))
+
+    return video_files
+
+# Transcode a video file
+def transcode_video(input_file, output_file, index, total):
+    logging.info(f"Starting transcoding of file #{index}/{total}: {os.path.basename(input_file)}")
+    print(f"Starting transcoding of file #{index}/{total}: {os.path.basename(input_file)}")
+
+    # Get original metadata and file size
+    original_size = os.path.getsize(input_file)
+    metadata = get_video_metadata(input_file)
+    orig_width, orig_height = get_resolution(metadata)
+
+    # Construct the ffmpeg command
+    cmd = [
+        "ffmpeg", "-i", input_file,
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c:v", "libx265", "-preset", "veryslow", "-crf", "28",
+        "-vf", f"scale=trunc(min(1280,oh*a)/2)*2:trunc(min(720,ih)/2)*2,setsar=1", "-r", "24",
+        "-c:a", "aac", "-b:a", "64k", "-ac", "1", "-ar", "44100",
+        "-pix_fmt", "yuv420p", "-profile:v", "main", "-level", "3.1",
+        "-movflags", "+faststart", "-tune", "film",
+        "-metadata", "title=", "-metadata", "comment=", "-tag:v", "hvc1",
+        output_file
+    ]
+
+    # Run the ffmpeg command
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            bufsize=1
+        )
+
+        # Process stderr to capture progress
+        for line in process.stderr:
+            # Print progress updates when they contain frame information
+            if "frame=" in line and "time=" in line:
+                print(f"\rFile #{index}/{total} Progress: {line.strip()}", end="")
+
+        # Wait for process to complete
+        process.wait()
+        print()  # Add a newline after progress display
+
+        if process.returncode != 0:
+            logging.error(f"Transcoding failed for file #{index}: {os.path.basename(input_file)}")
+            return False
+
+        # Get new file size and calculate savings
+        new_size = os.path.getsize(output_file)
+        savings_bytes = original_size - new_size
+        savings_percent = (savings_bytes / original_size) * 100 if original_size > 0 else 0
+
+        # Get new metadata
+        new_metadata = get_video_metadata(output_file)
+        new_width, new_height = get_resolution(new_metadata)
+
+        # Log the results
+        results = [
+            f"Completed file #{index}/{total}: {os.path.basename(input_file)}",
+            f"  Original resolution: {orig_width}x{orig_height}, New resolution: {new_width}x{new_height}",
+            f"  Original size: {original_size/1024/1024:.2f} MB, New size: {new_size/1024/1024:.2f} MB",
+            f"  Space saved: {savings_bytes/1024/1024:.2f} MB ({savings_percent:.2f}%)"
+        ]
+
+        for result in results:
+            logging.info(result)
+            print(result)
+
+        return True
+
+    except Exception as e:
+        error_msg = f"Error transcoding file #{index}: {str(e)}"
+        logging.error(error_msg)
+        print(error_msg)
+        return False
+
+def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Video Transcoder Script")
+    parser.add_argument("input_dir", help="Input directory containing video files to transcode")
+    parser.add_argument("-s", "--success_dir", help="Output directory for successfully transcoded files", default="transcoded_success")
+    parser.add_argument("-e", "--error_dir", help="Output directory for files that failed transcoding", default="transcoded_error")
+    args = parser.parse_args()
+
+    # Setup logging
+    logger, log_file = setup_logging()
+
+    # Check if input directory exists
+    if not os.path.isdir(args.input_dir):
+        logger.error(f"Input directory does not exist: {args.input_dir}")
+        sys.exit(1)
+
+    # Create output directories if they don't exist
+    success_dir = args.success_dir
+    error_dir = args.error_dir
+    os.makedirs(success_dir, exist_ok=True)
+    os.makedirs(error_dir, exist_ok=True)
+
+    # Files to track successful and failed transcodes
+    success_list_file = "successful_transcodes.txt"
+    failed_list_file = "failed_transcodes.txt"
+    successful_files = []
+    failed_files = []
+
+    # Find all video files in the input directory
+    logger.info(f"Searching for video files in {args.input_dir}")
+    video_files = find_video_files(args.input_dir)
+
+    if not video_files:
+        logger.warning("No video files found.")
+        sys.exit(0)
+
+    logger.info(f"Found {len(video_files)} video files to transcode")
+    logger.info(f"Log file: {log_file}")
+    print(f"Found {len(video_files)} video files to transcode")
+    print(f"Log file: {log_file}")
+    print(f"Success directory: {success_dir}")
+    print(f"Error directory: {error_dir}")
+
+    # Transcode each video file
+    successful = 0
+    failed = 0
+    total_original_size = 0
+    total_new_size = 0
+
+    for i, video_file in enumerate(video_files, 1):
+        # Create output filename (flat structure)
+        basename = os.path.basename(video_file)
+        output_file = os.path.join(success_dir, basename)
+        error_output_file = os.path.join(error_dir, basename)
+
+        # Get original size for total calculation
+        try:
+            original_size = os.path.getsize(video_file)
+            total_original_size += original_size
+        except:
+            pass
+
+        # Transcode the video
+        if transcode_video(video_file, output_file, i, len(video_files)):
+            successful += 1
+            successful_files.append(basename)
+            try:
+                new_size = os.path.getsize(output_file)
+                total_new_size += new_size
+            except:
+                pass
+        else:
+            failed += 1
+            failed_files.append(basename)
+            # Copy the original file to the error directory
+            try:
+                with open(video_file, 'rb') as src, open(error_output_file, 'wb') as dst:
+                    dst.write(src.read())
+                logger.info(f"Copied original file to error directory: {basename}")
+            except Exception as e:
+                logger.error(f"Failed to copy file to error directory: {str(e)}")
+
+    # Write successful and failed files to their respective lists
+    try:
+        with open(success_list_file, 'w') as f:
+            f.write('\n'.join(successful_files))
+        logger.info(f"Wrote list of {len(successful_files)} successful files to {success_list_file}")
+        print(f"Wrote list of {len(successful_files)} successful files to {success_list_file}")
+    except Exception as e:
+        logger.error(f"Failed to write successful files list: {str(e)}")
+
+    try:
+        with open(failed_list_file, 'w') as f:
+            f.write('\n'.join(failed_files))
+        logger.info(f"Wrote list of {len(failed_files)} failed files to {failed_list_file}")
+        print(f"Wrote list of {len(failed_files)} failed files to {failed_list_file}")
+    except Exception as e:
+        logger.error(f"Failed to write failed files list: {str(e)}")
+
+    # Calculate total savings
+    total_savings = total_original_size - total_new_size
+    savings_percent = (total_savings / total_original_size) * 100 if total_original_size > 0 else 0
+
+    # Log summary
+    summary_messages = [
+        f"Transcoding completed. {successful} successful, {failed} failed.",
+        f"Total original size: {total_original_size/1024/1024:.2f} MB",
+        f"Total new size: {total_new_size/1024/1024:.2f} MB",
+        f"Total space saved: {total_savings/1024/1024:.2f} MB ({savings_percent:.2f}%)"
+    ]
+
+    for message in summary_messages:
+        logger.info(message)
+        print(message)
+
+    print(f"Log file: {log_file}")
+    print(f"Successful files list: {success_list_file}")
+    print(f"Failed files list: {failed_list_file}")
+
+if __name__ == "__main__":
+    main()
