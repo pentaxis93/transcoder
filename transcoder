@@ -108,6 +108,10 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
     metadata = get_video_metadata(input_file, file_logger)
     orig_width, orig_height = get_resolution(metadata)
 
+    # Log original video details for diagnostics
+    file_logger.info(f"Original video resolution: {orig_width}x{orig_height}")
+    file_logger.info(f"Original video size: {original_size/1024/1024:.2f} MB")
+
     # Construct the ffmpeg command
     cmd = [
         "ffmpeg", "-i", input_file,
@@ -121,6 +125,13 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
         output_file
     ]
 
+    # Log the ffmpeg command for diagnostics (without the actual filename)
+    cmd_log = ' '.join(cmd)
+    cmd_log = cmd_log.replace(input_file, "INPUT_FILE").replace(
+        output_file, "OUTPUT_FILE")
+    file_logger.info(f"Running ffmpeg command: {cmd_log}")
+    console_logger.info(f"Running ffmpeg command for file #{index}")
+
     # Run the ffmpeg command
     try:
         process = subprocess.Popen(
@@ -131,8 +142,12 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
             bufsize=1
         )
 
+        # Collect all error output for diagnostics
+        error_lines = []
+
         # Process stderr to capture progress
         for line in process.stderr:
+            error_lines.append(line)
             # Print progress updates when they contain frame information
             if "frame=" in line and "time=" in line:
                 print(
@@ -143,9 +158,37 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
         print()  # Add a newline after progress display
 
         if process.returncode != 0:
+            # Log the error output to help diagnose the problem
             file_logger.error(
                 f"Transcoding failed for file #{index}: {os.path.basename(input_file)}")
+            file_logger.error("FFmpeg error output:")
+            for line in error_lines:
+                file_logger.error(f"  {line.strip()}")
+
+            # Log sanitized error message to console
             console_logger.error(f"Transcoding failed for file #{index}")
+            console_logger.error("FFmpeg error output (last 5 lines):")
+            for line in error_lines[-5:]:
+                # Sanitize the error message to remove any filenames
+                sanitized = line.strip()
+                sanitized = sanitized.replace(
+                    os.path.basename(input_file), "INPUT_FILE")
+                sanitized = sanitized.replace(
+                    os.path.basename(output_file), "OUTPUT_FILE")
+                console_logger.error(f"  {sanitized}")
+
+            # Also print to console
+            print(f"Transcoding failed for file #{index}")
+            print("FFmpeg error output (last 5 lines):")
+            for line in error_lines[-5:]:
+                # Sanitize the error message to remove any filenames
+                sanitized = line.strip()
+                sanitized = sanitized.replace(
+                    os.path.basename(input_file), "INPUT_FILE")
+                sanitized = sanitized.replace(
+                    os.path.basename(output_file), "OUTPUT_FILE")
+                print(f"  {sanitized}")
+
             return False
 
         # Get new file size and calculate savings
@@ -185,6 +228,7 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
             f"Error transcoding file #{index}: {os.path.basename(input_file)} - {str(e)}")
         # Log error to console without filename
         console_logger.error(f"Error transcoding file #{index}: {str(e)}")
+        print(f"Error transcoding file #{index}: {str(e)}")
         return False
 
 
