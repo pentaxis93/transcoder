@@ -133,7 +133,7 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
         "-c:v", "libx265",
         "-preset", "veryslow",
         "-crf", "28",
-        "-vf", "scale=min(1280,iw):min(720,ih):force_original_aspect_ratio=decrease,setsar=1",
+        "-vf", "scale=trunc(min(1280,iw)/2)*2:trunc(min(720,ih)/2)*2",
         "-r", "24",
         "-c:a", "aac",
         "-b:a", "64k",
