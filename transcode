@@ -15,6 +15,7 @@ import logging
 import json
 import time
 import signal
+import shutil
 from pathlib import Path
 from datetime import datetime
 
@@ -22,15 +23,46 @@ from datetime import datetime
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
 
-# Setup logging to both file and console
-def setup_logging():
-    log_file = f"transcode_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+# ANSI color codes for terminal output
+class Colors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+    GREY = "\033[90m"
+
+# Check if terminal supports colors
+def supports_color():
+    """Check if the terminal supports colors"""
+    if os.name == 'nt':
+        return False  # Simplified check for Windows
     
-    # We'll use two separate loggers - one for console (with no filenames) and one for file (with all details)
+    if not hasattr(sys.stdout, 'isatty') or not sys.stdout.isatty():
+        return False
+    
+    return True
+
+USE_COLORS = supports_color()
+
+# Color formatting function
+def colorize(text, color, use_color=True):
+    """Add color to text if supported"""
+    if use_color and USE_COLORS:
+        return f"{color}{text}{Colors.RESET}"
+    return text
+
+# Setup logging to both file and console
+def setup_logging(verbose=False):
+    log_file = f"transcode_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     
     # File logger (with all details)
     file_logger = logging.getLogger("file_logger")
-    file_logger.setLevel(logging.INFO)
+    file_logger.setLevel(logging.DEBUG if verbose else logging.INFO)
     
     # Console logger (generic info only)
     console_logger = logging.getLogger("console_logger")  
@@ -38,7 +70,7 @@ def setup_logging():
     
     # Create file handler with full details
     file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     file_logger.addHandler(file_handler)
@@ -192,6 +224,10 @@ def time_to_seconds(time_str):
     except (ValueError, TypeError):
         return 0  # Return 0 on error
 
+# Get human readable size
+def human_size(bytes, units=[' bytes','KB','MB','GB','TB']):
+    return str(bytes) + units[0] if bytes < 1024 else human_size(bytes>>10, units[1:])
+
 # Function to extract video resolution from metadata
 def get_resolution(metadata):
     if not metadata:
@@ -203,6 +239,53 @@ def get_resolution(metadata):
     
     return "unknown", "unknown"
 
+# Get video bitrate from metadata
+def get_bitrate(metadata):
+    if not metadata:
+        return "unknown"
+    
+    if "format" in metadata and "bit_rate" in metadata["format"]:
+        try:
+            return int(metadata["format"]["bit_rate"])
+        except (ValueError, TypeError):
+            pass
+    
+    for stream in metadata.get("streams", []):
+        if stream.get("codec_type") == "video" and "bit_rate" in stream:
+            try:
+                return int(stream["bit_rate"])
+            except (ValueError, TypeError):
+                pass
+    
+    return "unknown"
+
+# Get audio details from metadata
+def get_audio_details(metadata):
+    if not metadata:
+        return {"codec": "unknown", "channels": "unknown", "bitrate": "unknown"}
+    
+    for stream in metadata.get("streams", []):
+        if stream.get("codec_type") == "audio":
+            details = {
+                "codec": stream.get("codec_name", "unknown"),
+                "channels": stream.get("channels", "unknown"),
+                "bitrate": stream.get("bit_rate", "unknown")
+            }
+            return details
+    
+    return {"codec": "none", "channels": "none", "bitrate": "none"}
+
+# Get video codec from metadata
+def get_video_codec(metadata):
+    if not metadata:
+        return "unknown"
+    
+    for stream in metadata.get("streams", []):
+        if stream.get("codec_type") == "video":
+            return stream.get("codec_name", "unknown")
+    
+    return "unknown"
+
 # Simple progress monitoring for FFmpeg
 def monitor_ffmpeg_progress(process, total_duration, file_index, total_files):
     """Monitor FFmpeg progress and print updates in place"""
@@ -210,8 +293,12 @@ def monitor_ffmpeg_progress(process, total_duration, file_index, total_files):
     last_update = start_time
     update_interval = 1  # seconds
     
+    # Get terminal width for proper formatting
+    term_width = shutil.get_terminal_size().columns
+    
     # Print initial message
-    print(f"[{file_index}/{total_files}] Starting encoding...", end="\r", flush=True)
+    init_msg = colorize(f"[{file_index}/{total_files}] Starting encoding...", Colors.BLUE, USE_COLORS)
+    print(init_msg, end="\r", flush=True)
     
     # Monitor the process while it's running
     while process.poll() is None:
@@ -240,20 +327,38 @@ def monitor_ffmpeg_progress(process, total_duration, file_index, total_files):
                     remaining_seconds = total_estimated_seconds - elapsed
                     eta_mins = int(remaining_seconds / 60)
                     eta_secs = int(remaining_seconds % 60)
-                    eta_str = f", ETA: {eta_mins}m {eta_secs}s"
+                    eta_str = colorize(f"ETA: {eta_mins}m {eta_secs}s", Colors.CYAN, USE_COLORS)
                 else:
                     eta_str = ""
                 
                 # Create a progress bar
-                bar_length = 30
+                bar_length = min(30, term_width - 50)  # Adapt to terminal width
                 filled_length = int(bar_length * rough_progress / 100)
-                bar = '█' * filled_length + '░' * (bar_length - filled_length)
+                
+                # Color the progress bar
+                if USE_COLORS:
+                    # Choose color based on progress
+                    if rough_progress < 33:
+                        bar_color = Colors.RED
+                    elif rough_progress < 66:
+                        bar_color = Colors.YELLOW
+                    else:
+                        bar_color = Colors.GREEN
+                        
+                    bar = f"{bar_color}{'█' * filled_length}{Colors.GREY}{'░' * (bar_length - filled_length)}{Colors.RESET}"
+                else:
+                    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+                
+                # Format the progress percentage
+                progress_pct = colorize(f"{rough_progress:.1f}%", Colors.BOLD, USE_COLORS)
                 
                 # Display progress with progress bar
-                progress_msg = f"[{file_index}/{total_files}] [{bar}] {rough_progress:.1f}% | {elapsed_mins}m {elapsed_secs}s elapsed{eta_str}"
+                progress_msg = f"[{file_index}/{total_files}] [{bar}] {progress_pct} | {elapsed_mins}m {elapsed_secs}s elapsed"
+                if eta_str:
+                    progress_msg += f" | {eta_str}"
                 
                 # Make sure the line is long enough to overwrite previous line
-                progress_msg = progress_msg.ljust(80)
+                progress_msg = progress_msg.ljust(min(term_width, 100))
                 
                 # Print with carriage return to update in place
                 print(progress_msg, end="\r", flush=True)
@@ -261,19 +366,88 @@ def monitor_ffmpeg_progress(process, total_duration, file_index, total_files):
                 # Just show elapsed time if we don't know duration
                 elapsed_mins = int(elapsed / 60)
                 elapsed_secs = int(elapsed % 60)
-                progress_msg = f"[{file_index}/{total_files}] Processing... {elapsed_mins}m {elapsed_secs}s elapsed"
-                progress_msg = progress_msg.ljust(80)
+                progress_msg = f"[{file_index}/{total_files}] {colorize('Processing...', Colors.BLUE, USE_COLORS)} {elapsed_mins}m {elapsed_secs}s elapsed"
+                progress_msg = progress_msg.ljust(min(term_width, 100))
                 print(progress_msg, end="\r", flush=True)
     
     # Print final message with newline when process completes
     total_elapsed = time.time() - start_time
     elapsed_mins = int(total_elapsed / 60)
     elapsed_secs = int(total_elapsed % 60)
-    final_msg = f"[{file_index}/{total_files}] Encoding completed in {elapsed_mins}m {elapsed_secs}s"
-    final_msg = final_msg.ljust(80)  # Make sure we overwrite the whole progress line
+    final_msg = colorize(f"[{file_index}/{total_files}] Encoding completed in {elapsed_mins}m {elapsed_secs}s", Colors.GREEN, USE_COLORS)
+    final_msg = final_msg.ljust(min(term_width, 100))  # Make sure we overwrite the whole progress line
     print(final_msg)
     
     return process.returncode
+
+# Create a standard encoding command based on options
+def create_encoding_command(input_path, output_path, crf=28, preset="slower", tune=None):
+    # Base command with default options
+    cmd = [
+        "ffmpeg",
+        "-hwaccel", "auto",  # Add hardware acceleration where available
+        "-i", str(input_path),
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c:v", "libx265",
+        "-preset", preset,
+        "-x265-params", "limit-refs=3:no-amp=1:rd=4:aq-mode=2:bframes=4",  # Enhanced x265 parameters
+        "-crf", str(crf),
+        "-g", "48",  # Keyframe every 2 seconds at 24fps - better mobile seeking
+        # Only downscale if resolution is higher than 720p
+        "-vf", "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,setsar=1",
+        "-r", "24",
+        "-c:a", "aac", 
+        "-b:a", "48k",  # Reduced from 64k - sufficient for dialogue
+        "-ac", "1", 
+        "-ar", "32000",  # Reduced from 44100 - sufficient for dialogue
+        "-af", "loudnorm,bandpass=f=1500:width_type=h:width=200",  # Audio normalization and voice optimization
+        "-pix_fmt", "yuv420p",
+        "-profile:v", "main", "-level", "3.1",
+        "-movflags", "+faststart",
+        "-metadata", "title=", "-metadata", "comment=",
+        "-threads", "0",  # Use all available CPU cores
+        "-v", "warning",  # Reduce verbosity - only show warnings and errors
+        str(output_path)
+    ]
+    
+    # Add tune parameter if specified
+    if tune:
+        cmd.insert(cmd.index("-preset") + 2, "-tune")
+        cmd.insert(cmd.index("-preset") + 3, tune)
+    
+    return cmd
+
+# Get encoding settings summary
+def get_encoding_settings_summary(cmd):
+    # Extract key encoding parameters for display
+    settings = {
+        "codec": "H.265/HEVC",
+        "preset": "slower",
+        "crf": "28",
+        "resolution": "max 720p",
+        "framerate": "24 fps",
+        "audio": "48k mono AAC"
+    }
+    
+    # Try to get actual values from command
+    for i, param in enumerate(cmd):
+        if param == "-preset" and i+1 < len(cmd):
+            settings["preset"] = cmd[i+1]
+        elif param == "-crf" and i+1 < len(cmd):
+            settings["crf"] = cmd[i+1]
+        elif param == "-r" and i+1 < len(cmd):
+            settings["framerate"] = f"{cmd[i+1]} fps"
+        elif param == "-b:a" and i+1 < len(cmd):
+            settings["audio"] = f"{cmd[i+1]} "
+            if "-ac" in cmd:
+                ac_idx = cmd.index("-ac") + 1
+                if cmd[ac_idx] == "1":
+                    settings["audio"] += "mono "
+                elif cmd[ac_idx] == "2":
+                    settings["audio"] += "stereo "
+            settings["audio"] += "AAC"
+    
+    return settings
 
 # Transcode a video file
 def transcode_video(input_file, output_file, index, total, file_logger, console_logger):
@@ -281,60 +455,47 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
     file_logger.info(f"Starting transcoding of file #{index}/{total}: {os.path.basename(input_file)}")
     # Log to console without filename
     console_logger.info(f"[{index}/{total}] ▶️ Starting transcoding")
-    print(f"[{index}/{total}] ▶️ Starting transcoding")
+    print(colorize(f"[{index}/{total}] ▶️ Starting transcoding", Colors.BLUE, USE_COLORS))
     
     try:
         # Get original metadata and file size
         original_size = os.path.getsize(input_file)
         metadata = get_video_metadata(input_file, file_logger)
         orig_width, orig_height = get_resolution(metadata)
+        orig_codec = get_video_codec(metadata)
+        orig_bitrate = get_bitrate(metadata)
+        orig_audio = get_audio_details(metadata)
         
         # Get the duration for percentage calculation
         duration_seconds = get_duration(metadata)
         if duration_seconds:
+            duration_str = f"{duration_seconds/60:.2f} minutes"
             file_logger.info(f"Video duration: {duration_seconds:.2f} seconds")
-            print(f"    Duration: {duration_seconds/60:.2f} minutes")
+            print(f"    Duration: {duration_str}")
         else:
             file_logger.warning("Could not determine video duration")
             print("    Duration: Unknown")
             duration_seconds = 0  # Fallback value
         
         # Log original video details for diagnostics
-        file_logger.info(f"Original video resolution: {orig_width}x{orig_height}")
-        file_logger.info(f"Original video size: {original_size/1024/1024:.2f} MB")
-        print(f"    Resolution: {orig_width}x{orig_height}, Size: {original_size/1024/1024:.2f} MB")
+        original_details = f"Resolution: {orig_width}x{orig_height}"
+        if orig_bitrate != "unknown":
+            original_details += f", Bitrate: {orig_bitrate/1000:.1f} kbps"
+        original_details += f", Size: {original_size/1024/1024:.2f} MB"
+        original_details += f", Codec: {orig_codec}"
+        
+        file_logger.info(f"Original video specs: {original_details}")
+        print(f"    {original_details}")
         
         # Use Path objects for better handling of special characters
         input_path = Path(input_file)
         output_path = Path(output_file)
         
-        # Construct the ffmpeg command with all the requested tweaks
-        cmd = [
-            "ffmpeg",
-            "-hwaccel", "auto",  # Add hardware acceleration where available
-            "-i", str(input_path),
-            "-map", "0:v:0", "-map", "0:a:0?",
-            "-c:v", "libx265",
-            "-preset", "slower",  # Changed from veryslow to slower
-            "-x265-params", "limit-refs=3:no-amp=1:rd=4:aq-mode=2:bframes=4",  # Enhanced x265 parameters
-            "-crf", "28",
-            "-g", "48",  # Keyframe every 2 seconds at 24fps - better mobile seeking
-            # Only downscale if resolution is higher than 720p
-            "-vf", "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,setsar=1",
-            "-r", "24",
-            "-c:a", "aac", 
-            "-b:a", "48k",  # Reduced from 64k - sufficient for dialogue
-            "-ac", "1", 
-            "-ar", "32000",  # Reduced from 44100 - sufficient for dialogue
-            "-af", "loudnorm,bandpass=f=1500:width_type=h:width=200",  # Audio normalization and voice optimization
-            "-pix_fmt", "yuv420p",
-            "-profile:v", "main", "-level", "3.1",
-            "-movflags", "+faststart",
-            "-metadata", "title=", "-metadata", "comment=",
-            "-threads", "0",  # Use all available CPU cores
-            "-v", "warning",  # Reduce verbosity - only show warnings and errors
-            str(output_path)
-        ]
+        # Create encoding command
+        cmd = create_encoding_command(input_path, output_path)
+        
+        # Get encoding settings for summary
+        encoding_settings = get_encoding_settings_summary(cmd)
         
         # Log the ffmpeg command for diagnostics (without the actual filename)
         cmd_log = ' '.join(cmd)
@@ -367,16 +528,21 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
                 
                 # Log sanitized error message to console
                 console_logger.error(f"[{index}/{total}] ❌ Transcoding failed with code {return_code}")
-                print(f"[{index}/{total}] ❌ Transcoding failed with code {return_code}")
+                print(colorize(f"[{index}/{total}] ❌ Transcoding failed with code {return_code}", Colors.RED, USE_COLORS))
                 
                 # Show error summary
                 error_lines = error_output.splitlines()
                 if error_lines:
-                    print("    Error details (last 5 lines):")
+                    print(colorize("    Error details (last 5 lines):", Colors.RED, USE_COLORS))
                     for line in error_lines[-5:]:
                         # Skip progress info in the error summary
                         if not line.strip().startswith("frame="):
                             print(f"    {line}")
+                
+                # Comprehensive error summary
+                error_category = categorize_error(error_output)
+                print(colorize(f"\n    Error Category: {error_category}", Colors.RED, USE_COLORS))
+                print(colorize(f"    Original file has been copied to the error directory.", Colors.YELLOW, USE_COLORS))
                 
                 return False, error_output
         except Exception as e:
@@ -389,7 +555,7 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
             # Log the exception
             file_logger.error(f"Error monitoring transcoding process: {str(e)}")
             console_logger.error(f"[{index}/{total}] ❌ Error during monitoring: {str(e)}")
-            print(f"[{index}/{total}] ❌ Error during monitoring: {str(e)}")
+            print(colorize(f"[{index}/{total}] ❌ Error during monitoring: {str(e)}", Colors.RED, USE_COLORS))
             return False, str(e)
         
         # Get new file size and calculate savings
@@ -400,6 +566,8 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
         # Get new metadata
         new_metadata = get_video_metadata(output_file, file_logger)
         new_width, new_height = get_resolution(new_metadata)
+        new_bitrate = get_bitrate(new_metadata)
+        new_audio = get_audio_details(new_metadata)
         
         # Log the results (full file name in log file only)
         file_logger.info(f"Completed file #{index}/{total}: {os.path.basename(input_file)}")
@@ -407,12 +575,44 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
         file_logger.info(f"  Original size: {original_size/1024/1024:.2f} MB, New size: {new_size/1024/1024:.2f} MB")
         file_logger.info(f"  Space saved: {savings_bytes/1024/1024:.2f} MB ({savings_percent:.2f}%)")
         
-        # Console output (without filename)
-        console_logger.info(f"[{index}/{total}] ✅ Transcoding completed")
-        print(f"[{index}/{total}] ✅ Transcoding completed")
-        print(f"    Original: {orig_width}x{orig_height}, {original_size/1024/1024:.2f} MB")
-        print(f"    New: {new_width}x{new_height}, {new_size/1024/1024:.2f} MB")
-        print(f"    Saved: {savings_bytes/1024/1024:.2f} MB ({savings_percent:.2f}%)")
+        # Console output - comprehensive summary
+        print(colorize(f"[{index}/{total}] ✅ Transcoding completed successfully", Colors.GREEN, USE_COLORS))
+        
+        # Create a summary box
+        print("\n" + "─" * 50)
+        print(colorize("    TRANSCODING SUMMARY", Colors.BOLD + Colors.CYAN, USE_COLORS))
+        print("─" * 50)
+        
+        # File information
+        print(f"    File: {colorize('#'+str(index), Colors.BOLD, USE_COLORS)} of {total}")
+        
+        # Before/After comparison table
+        print("\n    " + colorize("BEFORE:", Colors.YELLOW, USE_COLORS) + " " * 18 + colorize("AFTER:", Colors.GREEN, USE_COLORS))
+        print(f"    Resolution:  {orig_width}x{orig_height}" + " " * (14 - len(f"{orig_width}x{orig_height}")) + f"{new_width}x{new_height}")
+        
+        # Bitrate comparison
+        orig_bitrate_str = f"{orig_bitrate/1000:.1f} kbps" if orig_bitrate != "unknown" else "unknown"
+        new_bitrate_str = f"{new_bitrate/1000:.1f} kbps" if new_bitrate != "unknown" else "unknown"
+        print(f"    Bitrate:     {orig_bitrate_str}" + " " * (14 - len(orig_bitrate_str)) + f"{new_bitrate_str}")
+        
+        # Size comparison with visual indicator
+        orig_size_str = f"{original_size/1024/1024:.2f} MB"
+        new_size_str = f"{new_size/1024/1024:.2f} MB"
+        print(f"    Size:        {orig_size_str}" + " " * (14 - len(orig_size_str)) + f"{new_size_str}")
+        
+        # Space savings
+        savings_str = f"{savings_bytes/1024/1024:.2f} MB ({savings_percent:.1f}%)"
+        print(f"    Space saved: {colorize(savings_str, Colors.GREEN if savings_percent > 0 else Colors.RED, USE_COLORS)}")
+        
+        # Encoding settings used
+        print("\n    " + colorize("ENCODING SETTINGS:", Colors.CYAN, USE_COLORS))
+        print(f"    Video codec:   {encoding_settings['codec']}")
+        print(f"    Quality:       CRF {encoding_settings['crf']}")
+        print(f"    Preset:        {encoding_settings['preset']}")
+        print(f"    Resolution:    {encoding_settings['resolution']}")
+        print(f"    Framerate:     {encoding_settings['framerate']}")
+        print(f"    Audio:         {encoding_settings['audio']}")
+        print("─" * 50)
         
         return True, None
     
@@ -422,7 +622,7 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
         file_logger.error(f"Error transcoding file #{index}: {os.path.basename(input_file)} - {error_message}")
         # Log error to console without filename
         console_logger.error(f"[{index}/{total}] ❌ Error: {error_message}")
-        print(f"[{index}/{total}] ❌ Error: {error_message}")
+        print(colorize(f"[{index}/{total}] ❌ Error: {error_message}", Colors.RED, USE_COLORS))
         return False, error_message
 
 def main():
@@ -431,15 +631,23 @@ def main():
     parser.add_argument("input_dir", help="Input directory containing video files to transcode")
     parser.add_argument("-s", "--success_dir", help="Output directory for successfully transcoded files", default="transcoded_success")
     parser.add_argument("-e", "--error_dir", help="Output directory for files that failed transcoding", default="transcoded_error")
+    parser.add_argument("-v", "--verbose", help="Enable verbose logging", action="store_true")
     args = parser.parse_args()
     
     # Setup logging
-    file_logger, console_logger, log_file = setup_logging()
+    file_logger, console_logger, log_file = setup_logging(args.verbose)
+    
+    # Print header
+    print("\n" + "═" * 70)
+    print(colorize("  VIDEO TRANSCODER", Colors.BOLD + Colors.CYAN, USE_COLORS))
+    print(colorize("  Optimized for small size and mobile viewing", Colors.CYAN, USE_COLORS))
+    print("═" * 70 + "\n")
     
     # Check if input directory exists
     if not os.path.isdir(args.input_dir):
         file_logger.error(f"Input directory does not exist: {args.input_dir}")
         console_logger.error(f"Input directory does not exist: {args.input_dir}")
+        print(colorize("❌ Error: Input directory not found", Colors.RED, USE_COLORS))
         sys.exit(1)
     
     # Create output directories if they don't exist
@@ -454,19 +662,25 @@ def main():
     successful_files = []
     failed_files = []  # Will now store tuples of (filename, error_message)
     
+    # Setup for batch processing statistics
+    start_time = time.time()
+    original_total_size = 0
+    new_total_size = 0
+    
     # Find all video files in the input directory, and directories without videos
     file_logger.info(f"Searching for video files in {args.input_dir}")
     console_logger.info(f"Searching for video files in {args.input_dir}")
+    print(colorize("🔍 Searching for video files...", Colors.BLUE, USE_COLORS))
     video_files, empty_dirs = find_video_files(args.input_dir)
     
     if not video_files:
         file_logger.warning("No video files found.")
         console_logger.warning("No video files found.")
-        print("❌ No video files found in the specified directory.")
+        print(colorize("❌ No video files found in the specified directory.", Colors.RED, USE_COLORS))
         
         # If we found empty directories, still report those
         if empty_dirs:
-            print(f"📁 Found {len(empty_dirs)} directories without video files:")
+            print(colorize(f"📁 Found {len(empty_dirs)} directories without video files:", Colors.YELLOW, USE_COLORS))
             for empty_dir in empty_dirs:
                 print(f"    - {empty_dir}")
             
@@ -476,9 +690,9 @@ def main():
                     f.write("DIRECTORIES WITHOUT VIDEO FILES:\n")
                     for empty_dir in empty_dirs:
                         f.write(f"{empty_dir}\n")
-                print(f"📝 Wrote list of {len(empty_dirs)} empty directories to {failed_list_file}")
+                print(colorize(f"📝 Wrote list of {len(empty_dirs)} empty directories to {failed_list_file}", Colors.GREY, USE_COLORS))
             except Exception as e:
-                print(f"❌ Failed to write empty directories list: {str(e)}")
+                print(colorize(f"❌ Failed to write empty directories list: {str(e)}", Colors.RED, USE_COLORS))
         
         sys.exit(0)
     
@@ -487,13 +701,17 @@ def main():
     console_logger.info(f"Found {len(video_files)} video files to transcode")
     console_logger.info(f"Log file: {log_file}")
     
-    print(f"📁 Found {len(video_files)} video files to transcode")
+    print(colorize(f"📁 Found {len(video_files)} video files to transcode", Colors.GREEN, USE_COLORS))
     if empty_dirs:
-        print(f"📁 Found {len(empty_dirs)} directories without video files")
-    print(f"📝 Log file: {log_file}")
-    print(f"✅ Success directory: {success_dir}")
-    print(f"❌ Error directory: {error_dir}")
-    print("-" * 50)
+        print(colorize(f"📁 Found {len(empty_dirs)} directories without video files", Colors.YELLOW, USE_COLORS))
+    print(colorize(f"📝 Log file: {log_file}", Colors.GREY, USE_COLORS))
+    print(colorize(f"✅ Success directory: {success_dir}", Colors.GREEN, USE_COLORS))
+    print(colorize(f"❌ Error directory: {error_dir}", Colors.RED, USE_COLORS))
+    
+    # Divider before starting transcoding
+    print("\n" + "═" * 70)
+    print(colorize("  STARTING BATCH TRANSCODING", Colors.BOLD + Colors.YELLOW, USE_COLORS))
+    print("═" * 70)
     
     # Transcode each video file
     successful = 0
@@ -507,13 +725,18 @@ def main():
         output_file = success_dir / basename
         error_output_file = error_dir / basename
         
+        # Print file separator
+        print(colorize(f"\n[{i}/{len(video_files)}] Processing {i/len(video_files)*100:.1f}% complete", 
+                   Colors.BOLD + Colors.BLUE, USE_COLORS))
+        print("─" * 50)
+        
         # Get original size for total calculation
         try:
             original_size = os.path.getsize(video_file)
             total_original_size += original_size
         except Exception as e:
             file_logger.error(f"Could not get file size for {video_file}: {str(e)}")
-            print(f"[{i}/{len(video_files)}] ⚠️ Warning: Could not get file size")
+            print(colorize(f"⚠️  Warning: Could not get file size", Colors.YELLOW, USE_COLORS))
             original_size = 0
         
         # Transcode the video
@@ -540,13 +763,18 @@ def main():
                         dst.write(src.read())
                 file_logger.info(f"Copied original file to error directory: {basename}")
                 console_logger.info(f"Copied file #{i} to error directory")
-                print(f"[{i}/{len(video_files)}] 📋 Copied original file to error directory")
+                print(colorize(f"📋 Copied original file to error directory", Colors.YELLOW, USE_COLORS))
             except Exception as e:
                 file_logger.error(f"Failed to copy file to error directory: {basename} - {str(e)}")
                 console_logger.error(f"Failed to copy file #{i} to error directory")
-                print(f"[{i}/{len(video_files)}] ❌ Failed to copy file to error directory: {str(e)}")
-        
-        print("-" * 50)  # Add separator between files
+                print(colorize(f"❌ Failed to copy file to error directory: {str(e)}", Colors.RED, USE_COLORS))
+    
+    # Calculate batch statistics
+    batch_end_time = time.time()
+    batch_elapsed = batch_end_time - start_time
+    batch_hours = int(batch_elapsed / 3600)
+    batch_mins = int((batch_elapsed % 3600) / 60)
+    batch_secs = int(batch_elapsed % 60)
     
     # Write successful and failed files to their respective lists
     try:
@@ -554,11 +782,11 @@ def main():
             f.write('\n'.join(successful_files))
         file_logger.info(f"Wrote list of {len(successful_files)} successful files to {success_list_file}")
         console_logger.info(f"Wrote list of {successful} successful files to file")
-        print(f"📝 Wrote list of {successful} successful files to {success_list_file}")
+        print(colorize(f"📝 Wrote list of {successful} successful files to {success_list_file}", Colors.GREEN, USE_COLORS))
     except Exception as e:
         file_logger.error(f"Failed to write successful files list: {str(e)}")
         console_logger.error("Failed to write successful files list")
-        print(f"❌ Failed to write successful files list: {str(e)}")
+        print(colorize(f"❌ Failed to write successful files list: {str(e)}", Colors.RED, USE_COLORS))
     
     # Group failed files by error category
     if failed_files:
@@ -597,11 +825,17 @@ def main():
             
             file_logger.info(f"Wrote list of {len(failed_files)} failed files (in {len(errors_by_category)} categories) to {failed_list_file}")
             console_logger.info(f"Wrote list of {failed} failed files to file")
-            print(f"📝 Wrote list of {failed} failed files (in {len(errors_by_category)} categories) to {failed_list_file}")
+            print(colorize(f"📝 Wrote list of {failed} failed files (in {len(errors_by_category)} categories) to {failed_list_file}", Colors.YELLOW, USE_COLORS))
+            
+            # Print summary of errors by category
+            print(colorize("\nFailed files by category:", Colors.YELLOW, USE_COLORS))
+            for category, files in sorted(errors_by_category.items()):
+                print(f"  • {category}: {len(files)} files")
+            
         except Exception as e:
             file_logger.error(f"Failed to write failed files list: {str(e)}")
             console_logger.error("Failed to write failed files list")
-            print(f"❌ Failed to write failed files list: {str(e)}")
+            print(colorize(f"❌ Failed to write failed files list: {str(e)}", Colors.RED, USE_COLORS))
     elif empty_dirs:
         # Only empty directories to report
         try:
@@ -609,35 +843,60 @@ def main():
                 f.write(f"DIRECTORIES WITHOUT VIDEO FILES ({len(empty_dirs)}):\n")
                 for empty_dir in empty_dirs:
                     f.write(f"- {empty_dir}\n")
-            print(f"📝 Wrote list of {len(empty_dirs)} empty directories to {failed_list_file}")
+            print(colorize(f"📝 Wrote list of {len(empty_dirs)} empty directories to {failed_list_file}", Colors.YELLOW, USE_COLORS))
         except Exception as e:
-            print(f"❌ Failed to write empty directories list: {str(e)}")
+            print(colorize(f"❌ Failed to write empty directories list: {str(e)}", Colors.RED, USE_COLORS))
     
     # Calculate total savings
     total_savings = total_original_size - total_new_size
     savings_percent = (total_savings / total_original_size) * 100 if total_original_size > 0 else 0
     
+    # Calculate average time per file
+    avg_time_per_file = batch_elapsed / max(1, successful) if successful > 0 else 0
+    avg_mins = int(avg_time_per_file / 60)
+    avg_secs = int(avg_time_per_file % 60)
+    
     # Print summary with some visual enhancements
-    print("\n" + "=" * 50)
-    print(f"📊 SUMMARY")
-    print("=" * 50)
-    print(f"✅ Successfully transcoded: {successful} files")
-    print(f"❌ Failed to transcode: {failed} files")
+    print("\n" + "═" * 70)
+    print(colorize("  BATCH TRANSCODE SUMMARY", Colors.BOLD + Colors.CYAN, USE_COLORS))
+    print("═" * 70)
+    
+    # Results table
+    print(colorize("\n  RESULTS", Colors.BOLD, USE_COLORS))
+    print(f"  ✅ Successfully transcoded: {successful} files")
+    print(f"  ❌ Failed to transcode: {failed} files")
     if empty_dirs:
-        print(f"📁 Directories without videos: {len(empty_dirs)}")
-    print(f"💾 Total original size: {total_original_size/1024/1024:.2f} MB")
-    print(f"💾 Total new size: {total_new_size/1024/1024:.2f} MB")
-    print(f"🔽 Total space saved: {total_savings/1024/1024:.2f} MB ({savings_percent:.2f}%)")
-    print(f"📝 Log file: {log_file}")
-    print(f"📋 Successful files list: {success_list_file}")
-    print(f"📋 Failed files list: {failed_list_file}")
-    print("=" * 50)
+        print(f"  📁 Directories without videos: {len(empty_dirs)}")
+    
+    # Space savings table
+    print(colorize("\n  SPACE SAVINGS", Colors.BOLD, USE_COLORS))
+    print(f"  💾 Total original size: {human_size(total_original_size)}")
+    print(f"  💾 Total new size: {human_size(total_new_size)}")
+    savings_text = f"  🔽 Total space saved: {human_size(total_savings)} ({savings_percent:.1f}%)"
+    if savings_percent > 0:
+        print(colorize(savings_text, Colors.GREEN, USE_COLORS))
+    else:
+        print(colorize(savings_text, Colors.RED, USE_COLORS))
+    
+    # Time stats table
+    print(colorize("\n  TIME STATISTICS", Colors.BOLD, USE_COLORS))
+    print(f"  🕒 Total processing time: {batch_hours}h {batch_mins}m {batch_secs}s")
+    if successful > 0:
+        print(f"  🕒 Average time per file: {avg_mins}m {avg_secs}s")
+    
+    # File locations
+    print(colorize("\n  FILE LOCATIONS", Colors.BOLD, USE_COLORS))
+    print(f"  📝 Log file: {log_file}")
+    print(f"  📋 Successful files list: {success_list_file}")
+    print(f"  📋 Failed files list: {failed_list_file}")
+    print("═" * 70)
     
     # Also log the summary details
     file_logger.info(f"Transcoding completed. {successful} successful, {failed} failed.")
     file_logger.info(f"Total original size: {total_original_size/1024/1024:.2f} MB")
     file_logger.info(f"Total new size: {total_new_size/1024/1024:.2f} MB")
     file_logger.info(f"Total space saved: {total_savings/1024/1024:.2f} MB ({savings_percent:.2f}%)")
+    file_logger.info(f"Total processing time: {batch_hours}h {batch_mins}m {batch_secs}s")
     file_logger.info(f"Successful files list: {success_list_file}")
     file_logger.info(f"Failed files list: {failed_list_file}")
 
