@@ -27,6 +27,8 @@ sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
 
 # ANSI color codes for terminal output
+
+
 class Colors:
     RESET = "\033[0m"
     BOLD = "\033[1m"
@@ -39,6 +41,7 @@ class Colors:
     WHITE = "\033[97m"
     GREY = "\033[90m"
 
+
 # Global variables
 encoding_settings = {
     "codec": "H.265/HEVC",
@@ -50,6 +53,8 @@ encoding_settings = {
 }
 
 # Check if terminal supports colors
+
+
 def supports_color():
     """Check if the terminal supports colors"""
     if os.name == 'nt':
@@ -60,9 +65,12 @@ def supports_color():
 
     return True
 
+
 USE_COLORS = supports_color()
 
 # Color formatting function
+
+
 def colorize(text, color, use_color=True):
     """Add color to text if supported"""
     if use_color and USE_COLORS:
@@ -70,6 +78,8 @@ def colorize(text, color, use_color=True):
     return text
 
 # Setup logging to both file and console
+
+
 def setup_logging(verbose=False):
     log_file = f"transcode_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
@@ -101,13 +111,15 @@ def setup_logging(verbose=False):
     return file_logger, console_logger, log_file
 
 # FFMPEG diagnostics functions
+
+
 def check_ffmpeg_available():
     """Verify ffmpeg is installed and working properly"""
     try:
         result = subprocess.run(
-            ["ffmpeg", "-version"], 
-            capture_output=True, 
-            text=True, 
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            text=True,
             timeout=5
         )
         if result.returncode == 0:
@@ -119,10 +131,11 @@ def check_ffmpeg_available():
     except Exception as e:
         return False, f"Error checking ffmpeg: {str(e)}"
 
+
 def test_ffmpeg_capability():
     """Test ffmpeg capabilities to find working configuration"""
     print(colorize("🔍 Testing ffmpeg capabilities...", Colors.BLUE, USE_COLORS))
-    
+
     test_configs = [
         {"name": "Standard (no hardware acceleration)", "hwaccel": None},
         {"name": "Auto hardware acceleration", "hwaccel": "auto"},
@@ -130,16 +143,16 @@ def test_ffmpeg_capability():
         {"name": "CUDA hardware acceleration", "hwaccel": "cuda"},
         {"name": "QSV hardware acceleration", "hwaccel": "qsv"},
     ]
-    
+
     # Create a temporary file for testing
     temp_dir = tempfile.mkdtemp(prefix="ffmpeg_test_")
     temp_in = os.path.join(temp_dir, "temp_test_input.mp4")
     temp_out = os.path.join(temp_dir, "temp_test_output.mp4")
-    
+
     # Generate a 1-second test video
     try:
         subprocess.run([
-            "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=30", 
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=30",
             "-c:v", "libx264", "-pix_fmt", "yuv420p", temp_in
         ], capture_output=True, timeout=10)
         if not os.path.exists(temp_in) or os.path.getsize(temp_in) < 1000:
@@ -148,22 +161,24 @@ def test_ffmpeg_capability():
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None
     except Exception as e:
-        print(colorize(f"  ❌ Could not generate test video: {e}", Colors.RED, USE_COLORS))
+        print(
+            colorize(f"  ❌ Could not generate test video: {e}", Colors.RED, USE_COLORS))
         # Clean up
         shutil.rmtree(temp_dir, ignore_errors=True)
         return None
-    
+
     working_configs = []
-    
+
     for config in test_configs:
-        print(colorize(f"  Testing: {config['name']}", Colors.CYAN, USE_COLORS))
-        
+        print(
+            colorize(f"  Testing: {config['name']}", Colors.CYAN, USE_COLORS))
+
         cmd = ["ffmpeg", "-y"]
-        
+
         # Add hwaccel if specified
         if config["hwaccel"]:
             cmd.extend(["-hwaccel", config["hwaccel"]])
-        
+
         # Complete command
         cmd.extend([
             "-i", temp_in,
@@ -173,29 +188,36 @@ def test_ffmpeg_capability():
             "-t", "0.1",  # Only encode 0.1 seconds
             temp_out
         ])
-        
+
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=15)
             if result.returncode == 0 and os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
-                print(colorize(f"  ✅ Success: {config['name']}", Colors.GREEN, USE_COLORS))
+                print(
+                    colorize(f"  ✅ Success: {config['name']}", Colors.GREEN, USE_COLORS))
                 working_configs.append(config)
             else:
-                print(colorize(f"  ❌ Failed: {config['name']}", Colors.RED, USE_COLORS))
-                error_msg = result.stderr.split('Error:')[-1].strip() if 'Error:' in result.stderr else 'Unknown error'
+                print(
+                    colorize(f"  ❌ Failed: {config['name']}", Colors.RED, USE_COLORS))
+                error_msg = result.stderr.split(
+                    'Error:')[-1].strip() if 'Error:' in result.stderr else 'Unknown error'
                 print(f"    Error: {error_msg}")
         except Exception as e:
-            print(colorize(f"  ❌ Failed: {config['name']} - {str(e)}", Colors.RED, USE_COLORS))
-    
+            print(
+                colorize(f"  ❌ Failed: {config['name']} - {str(e)}", Colors.RED, USE_COLORS))
+
     # Clean up
     try:
         shutil.rmtree(temp_dir, ignore_errors=True)
     except:
         pass
-    
+
     if working_configs:
         return working_configs[0]  # Return first working configuration
     else:
-        return {"name": "Software encoding only", "hwaccel": None}  # Default fallback
+        # Default fallback
+        return {"name": "Software encoding only", "hwaccel": None}
+
 
 def verify_input_file(file_path, file_logger):
     """Verify that the input file exists, is readable, and is a valid video file"""
@@ -203,22 +225,23 @@ def verify_input_file(file_path, file_logger):
     if not os.path.exists(file_path):
         file_logger.error(f"Input file does not exist: {file_path}")
         return False, "File does not exist"
-    
+
     # Check file is readable
     if not os.access(file_path, os.R_OK):
         file_logger.error(f"Input file is not readable: {file_path}")
         return False, "File is not readable"
-    
+
     # Check file size
     try:
         file_size = os.path.getsize(file_path)
         if file_size < 1000:  # Less than 1KB
-            file_logger.error(f"Input file is too small to be a valid video: {file_path} ({file_size} bytes)")
+            file_logger.error(
+                f"Input file is too small to be a valid video: {file_path} ({file_size} bytes)")
             return False, "File is too small to be a valid video"
     except Exception as e:
         file_logger.error(f"Could not get file size: {str(e)}")
         return False, f"Could not get file size: {str(e)}"
-    
+
     # Check file is a valid video using ffprobe
     try:
         cmd = [
@@ -229,41 +252,45 @@ def verify_input_file(file_path, file_logger):
             "-of", "json",
             file_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=10)
+
         if result.returncode != 0:
             file_logger.error(f"ffprobe error: {result.stderr.strip()}")
             return False, f"ffprobe error: {result.stderr.strip()}"
-        
+
         try:
             probe_data = json.loads(result.stdout)
             streams = probe_data.get("streams", [])
-            
+
             if not streams:
                 file_logger.error("No video streams found in file")
                 return False, "No video streams found in file"
-                
+
             for stream in streams:
                 if stream.get("codec_type") == "video":
                     return True, None
-                
+
             file_logger.error("No video stream found in file")
             return False, "No video stream found in file"
-            
+
         except json.JSONDecodeError:
-            file_logger.error(f"Could not parse ffprobe output: {result.stdout}")
+            file_logger.error(
+                f"Could not parse ffprobe output: {result.stdout}")
             return False, "Could not parse ffprobe output"
-            
+
     except subprocess.TimeoutExpired:
         file_logger.error("ffprobe timed out - file may be corrupted")
         return False, "ffprobe timed out - file may be corrupted"
     except Exception as e:
         file_logger.error(f"Error verifying input file: {str(e)}")
         return False, f"Error verifying input file: {str(e)}"
-    
+
     return True, None
 
 # Categorize error messages
+
+
 def categorize_error(error_message):
     # Define common error patterns and their categories
     error_categories = [
@@ -295,6 +322,8 @@ def categorize_error(error_message):
     return "Other Error"
 
 # Find all video files in a directory and its subdirectories
+
+
 def find_video_files(input_dir):
     # Convert input_dir to absolute path to ensure consistent path handling
     input_dir_abs = os.path.abspath(input_dir)
@@ -341,6 +370,8 @@ def find_video_files(input_dir):
     return video_files, empty_dirs
 
 # Get video file metadata using ffprobe
+
+
 def get_video_metadata(video_path, file_logger):
     try:
         cmd = [
@@ -360,6 +391,8 @@ def get_video_metadata(video_path, file_logger):
         return None
 
 # Extract video duration from metadata
+
+
 def get_duration(metadata):
     if not metadata:
         return None
@@ -382,6 +415,8 @@ def get_duration(metadata):
     return None
 
 # Convert HH:MM:SS.MS time format to seconds
+
+
 def time_to_seconds(time_str):
     try:
         # Handle different time formats
@@ -410,10 +445,14 @@ def time_to_seconds(time_str):
         return 0  # Return 0 on error
 
 # Get human readable size
+
+
 def human_size(bytes, units=[' bytes', 'KB', 'MB', 'GB', 'TB']):
-    return str(bytes) + units[0] if bytes < 1024 else human_size(bytes >> 10, units[1:])
+    return str(bytes) + units[0] if bytes < 1024 else human_size(bytes // 1024, units[1:])
 
 # Function to extract video resolution from metadata
+
+
 def get_resolution(metadata):
     if not metadata:
         return "unknown", "unknown"
@@ -425,6 +464,8 @@ def get_resolution(metadata):
     return "unknown", "unknown"
 
 # Get video bitrate from metadata
+
+
 def get_bitrate(metadata):
     if not metadata:
         return "unknown"
@@ -445,6 +486,8 @@ def get_bitrate(metadata):
     return "unknown"
 
 # Get audio details from metadata
+
+
 def get_audio_details(metadata):
     if not metadata:
         return {"codec": "unknown", "channels": "unknown", "bitrate": "unknown"}
@@ -461,6 +504,8 @@ def get_audio_details(metadata):
     return {"codec": "none", "channels": "none", "bitrate": "none"}
 
 # Get video codec from metadata
+
+
 def get_video_codec(metadata):
     if not metadata:
         return "unknown"
@@ -472,29 +517,33 @@ def get_video_codec(metadata):
     return "unknown"
 
 # Generate a safe temporary filename for the output
+
+
 def get_safe_temp_filename(input_path, work_dir):
     """Generate a safe temporary filename in the work directory based on input path"""
     # Get the original extension
     _, ext = os.path.splitext(input_path)
     if not ext:
         ext = ".mp4"  # Default extension if none found
-    
+
     # Generate a hash of the original path to create a unique, safe filename
     input_hash = hashlib.md5(str(input_path).encode()).hexdigest()[:12]
-    
+
     # Create a safe filename with timestamp
     timestamp = int(time.time())
     safe_filename = f"transcode_{timestamp}_{input_hash}{ext}"
-    
+
     # Return the full path in the work directory
     return os.path.join(work_dir, safe_filename)
 
 # Read ffmpeg process output from a file
+
+
 def read_ffmpeg_output(output_file, max_lines=10):
     """Read the most recent lines from ffmpeg output file"""
     if not os.path.exists(output_file):
         return "Output file not found"
-        
+
     try:
         with open(output_file, 'r', errors='replace') as f:
             lines = f.readlines()
@@ -503,14 +552,16 @@ def read_ffmpeg_output(output_file, max_lines=10):
         return f"Error reading output: {str(e)}"
 
 # Create a standard encoding command based on options
+
+
 def create_encoding_command(input_path, output_path, crf=28, preset="slower", tune=None, hwaccel=None):
     # Base command with configurable hardware acceleration
     cmd = ["ffmpeg", "-y"]
-    
+
     # Add hardware acceleration if specified
     if hwaccel:
         cmd.extend(["-hwaccel", hwaccel])
-    
+
     # Add the rest of the command
     cmd.extend([
         "-i", str(input_path),
@@ -545,6 +596,8 @@ def create_encoding_command(input_path, output_path, crf=28, preset="slower", tu
     return cmd
 
 # Create a simpler encoding command for problematic files
+
+
 def create_simple_encoding_command(input_path, output_path):
     """Create a simpler encoding command that may work for problematic files"""
     return [
@@ -553,7 +606,7 @@ def create_simple_encoding_command(input_path, output_path):
         "-c:v", "libx264",  # Use H.264 instead of H.265
         "-preset", "medium",  # Use a faster preset
         "-crf", "23",  # Lower quality for better compatibility
-        "-vf", "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease", 
+        "-vf", "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease",
         "-c:a", "aac",
         "-b:a", "128k",  # Higher audio bitrate
         "-ac", "2",  # Stereo audio
@@ -563,6 +616,8 @@ def create_simple_encoding_command(input_path, output_path):
     ]
 
 # Get encoding settings summary
+
+
 def get_encoding_settings_summary(cmd):
     # Extract key encoding parameters for display
     settings = {
@@ -600,27 +655,32 @@ def get_encoding_settings_summary(cmd):
     return settings
 
 # Start ffmpeg process with better output handling
+
+
 def start_ffmpeg_process(cmd, input_file, output_file, index, total, file_logger):
     """Start ffmpeg process with improved error handling and output capturing"""
-    file_logger.info(f"Starting ffmpeg for file #{index}: {os.path.basename(input_file)}")
-    
+    file_logger.info(
+        f"Starting ffmpeg for file #{index}: {os.path.basename(input_file)}")
+
     # Create temporary files for output
-    stdout_file = tempfile.NamedTemporaryFile(delete=False, prefix="ffmpeg_stdout_", suffix=".txt")
-    stderr_file = tempfile.NamedTemporaryFile(delete=False, prefix="ffmpeg_stderr_", suffix=".txt")
-    
+    stdout_file = tempfile.NamedTemporaryFile(
+        delete=False, prefix="ffmpeg_stdout_", suffix=".txt")
+    stderr_file = tempfile.NamedTemporaryFile(
+        delete=False, prefix="ffmpeg_stderr_", suffix=".txt")
+
     stdout_path = stdout_file.name
     stderr_path = stderr_file.name
-    
+
     # Close the files so the process can open them
     stdout_file.close()
     stderr_file.close()
-    
+
     try:
         # Log the command we're about to run
         cmd_str = ' '.join(cmd)
         sanitized_cmd = re.sub(r'(\s)(\/.*?\/)', r'\1FILEPATH', cmd_str)
         file_logger.info(f"Running command: {sanitized_cmd}")
-        
+
         # Start the process with output redirected to files
         with open(stdout_path, 'w') as stdout_f, open(stderr_path, 'w') as stderr_f:
             process = subprocess.Popen(
@@ -630,52 +690,54 @@ def start_ffmpeg_process(cmd, input_file, output_file, index, total, file_logger
                 preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
                 text=True
             )
-        
+
         # Check if process started successfully
         if process.poll() is not None:
             error_msg = f"Process exited immediately with code {process.returncode}"
             file_logger.error(error_msg)
             stderr_content = read_ffmpeg_output(stderr_path)
             file_logger.error(f"Error output: {stderr_content}")
-            
+
             # Clean up
             try:
                 os.unlink(stdout_path)
                 os.unlink(stderr_path)
             except:
                 pass
-                
+
             return None, error_msg
-        
+
         # Store the output file paths with the process
         process.stdout_file = stdout_path
         process.stderr_file = stderr_path
-        
+
         return process, None
-        
+
     except Exception as e:
         error_msg = f"Failed to start ffmpeg process: {str(e)}"
         file_logger.error(error_msg)
-        
+
         # Clean up
         try:
             os.unlink(stdout_path)
             os.unlink(stderr_path)
         except:
             pass
-            
+
         return None, error_msg
 
 # Simple progress monitoring for FFmpeg
+
+
 def monitor_ffmpeg_progress(process, total_duration, file_index, total_files, output_file_path):
     """Monitor FFmpeg progress and print updates in place, checking file creation and growth"""
     if not process:
         return 1, False
-        
+
     # Get output file paths from process
     stdout_file = getattr(process, 'stdout_file', None)
     stderr_file = getattr(process, 'stderr_file', None)
-    
+
     start_time = time.time()
     last_update = start_time
     update_interval = 1  # seconds
@@ -686,13 +748,14 @@ def monitor_ffmpeg_progress(process, total_duration, file_index, total_files, ou
     no_growth_count = 0
     # Allow 5 checks (25 seconds) with no growth before warning
     max_no_growth = 5
-    
+
     # Check for immediate errors
     time.sleep(0.5)
     if stderr_file and os.path.exists(stderr_file):
         error_output = read_ffmpeg_output(stderr_file, 5)
         if "Panic: cannot open" in error_output or "Error" in error_output or "error" in error_output:
-            print(colorize(f"\n⚠️  Detected early errors: {error_output}", Colors.RED, USE_COLORS))
+            print(colorize(
+                f"\n⚠️  Detected early errors: {error_output}", Colors.RED, USE_COLORS))
 
     # Get terminal width for proper formatting
     term_width = shutil.get_terminal_size().columns
@@ -735,12 +798,13 @@ def monitor_ffmpeg_progress(process, total_duration, file_index, total_files, ou
             if not file_created and elapsed > 30:
                 warning_msg = f"⚠️  Warning: Output file not created yet after {int(elapsed)}s"
                 print(f"\r{warning_msg}".ljust(term_width))
-                
+
                 # Check error output for clues
                 if stderr_file and os.path.exists(stderr_file):
                     error_output = read_ffmpeg_output(stderr_file, 5)
                     if error_output and not error_output.startswith("Output file not found"):
-                        print(colorize(f"    Recent errors: {error_output}", Colors.RED, USE_COLORS))
+                        print(
+                            colorize(f"    Recent errors: {error_output}", Colors.RED, USE_COLORS))
 
             # If file exists but hasn't grown for several checks, show warning
             if file_created and no_growth_count >= max_no_growth and current_file_size > 0:
@@ -763,8 +827,12 @@ def monitor_ffmpeg_progress(process, total_duration, file_index, total_files, ou
                         growth_rate = (current_file_size -
                                        last_file_size) / file_check_interval
                         file_status += f" (+{human_size(growth_rate)}/s)"
-                except:
-                    file_status = "error reading file size"
+                except OSError:
+                    if last_file_size > 0:
+                        current_file_size = last_file_size
+                        file_status = f"output: {human_size(current_file_size)}"
+                    else:
+                        file_status = "checking size..."
 
             # Estimate progress if we know the duration
             if total_duration > 0:
@@ -867,7 +935,8 @@ def monitor_ffmpeg_progress(process, total_duration, file_index, total_files, ou
     final_msg = colorize(
         f"[{file_index}/{total_files}] Encoding completed in {elapsed_mins}m {elapsed_secs}s", Colors.GREEN, USE_COLORS)
     final_msg += " " + \
-        colorize(f"[{file_status}]", Colors.GREEN if final_file_size > 0 else Colors.RED, USE_COLORS)
+        colorize(f"[{file_status}]", Colors.GREEN if final_file_size >
+                 0 else Colors.RED, USE_COLORS)
     # Make sure we overwrite the whole progress line
     final_msg = final_msg.ljust(min(term_width, 100))
     print(final_msg)
@@ -884,6 +953,8 @@ def monitor_ffmpeg_progress(process, total_duration, file_index, total_files, ou
     return process.returncode, final_file_size > 0, error_output
 
 # Transcode a video file
+
+
 def transcode_video(input_file, output_file, index, total, file_logger, console_logger, working_hwaccel=None):
     # Log with filename to file only
     file_logger.info(
@@ -900,32 +971,35 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
             error_msg = f"Invalid input file: {input_error}"
             file_logger.error(error_msg)
             console_logger.error(f"[{index}/{total}] ❌ {error_msg}")
-            print(colorize(f"[{index}/{total}] ❌ {error_msg}", Colors.RED, USE_COLORS))
+            print(
+                colorize(f"[{index}/{total}] ❌ {error_msg}", Colors.RED, USE_COLORS))
             return False, error_msg
 
         # Get original metadata and file size
         original_size = os.path.getsize(input_file)
         metadata = get_video_metadata(input_file, file_logger)
-        
+
         if not metadata:
             warning_msg = "Could not get video metadata, file may be corrupted but will try to transcode anyway"
             file_logger.warning(warning_msg)
             console_logger.warning(f"[{index}/{total}] ⚠️ {warning_msg}")
-            print(colorize(f"[{index}/{total}] ⚠️ {warning_msg}", Colors.YELLOW, USE_COLORS))
+            print(
+                colorize(f"[{index}/{total}] ⚠️ {warning_msg}", Colors.YELLOW, USE_COLORS))
             orig_width, orig_height = "unknown", "unknown"
             orig_codec = "unknown"
             orig_bitrate = "unknown"
-            orig_audio = {"codec": "unknown", "channels": "unknown", "bitrate": "unknown"}
+            orig_audio = {"codec": "unknown",
+                          "channels": "unknown", "bitrate": "unknown"}
             duration_seconds = 0
         else:
             orig_width, orig_height = get_resolution(metadata)
             orig_codec = get_video_codec(metadata)
             orig_bitrate = get_bitrate(metadata)
             orig_audio = get_audio_details(metadata)
-            
+
             # Get the duration for percentage calculation
             duration_seconds = get_duration(metadata)
-            
+
         if duration_seconds:
             duration_str = f"{duration_seconds/60:.2f} minutes"
             file_logger.info(f"Video duration: {duration_seconds:.2f} seconds")
@@ -986,36 +1060,43 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
 
         # Create encoding command with the working hardware acceleration, if known
         hwaccel = working_hwaccel.get("hwaccel") if working_hwaccel else None
-        cmd = create_encoding_command(input_path, temp_output_path, hwaccel=hwaccel)
+        cmd = create_encoding_command(
+            input_path, temp_output_path, hwaccel=hwaccel)
 
         # Get encoding settings for display
         global encoding_settings
         encoding_settings = get_encoding_settings_summary(cmd)
 
         # Start the ffmpeg process with better output handling
-        process, error = start_ffmpeg_process(cmd, input_file, temp_output_path, index, total, file_logger)
-        
+        process, error = start_ffmpeg_process(
+            cmd, input_file, temp_output_path, index, total, file_logger)
+
         if not process:
             error_msg = f"Failed to start ffmpeg: {error}"
             file_logger.error(error_msg)
             console_logger.error(f"[{index}/{total}] ❌ {error_msg}")
-            print(colorize(f"[{index}/{total}] ❌ {error_msg}", Colors.RED, USE_COLORS))
-            
+            print(
+                colorize(f"[{index}/{total}] ❌ {error_msg}", Colors.RED, USE_COLORS))
+
             # Try with simpler encoding settings if first attempt failed
-            print(colorize(f"[{index}/{total}] 🔄 Retrying with simpler encoding settings...", Colors.YELLOW, USE_COLORS))
-            simple_cmd = create_simple_encoding_command(input_path, temp_output_path)
-            
+            print(colorize(
+                f"[{index}/{total}] 🔄 Retrying with simpler encoding settings...", Colors.YELLOW, USE_COLORS))
+            simple_cmd = create_simple_encoding_command(
+                input_path, temp_output_path)
+
             # Update encoding settings for display
             encoding_settings = get_encoding_settings_summary(simple_cmd)
-            
+
             # Try again with simpler settings
-            process, error = start_ffmpeg_process(simple_cmd, input_file, temp_output_path, index, total, file_logger)
-            
+            process, error = start_ffmpeg_process(
+                simple_cmd, input_file, temp_output_path, index, total, file_logger)
+
             if not process:
                 error_msg = f"Failed to start ffmpeg with simpler settings: {error}"
                 file_logger.error(error_msg)
                 console_logger.error(f"[{index}/{total}] ❌ {error_msg}")
-                print(colorize(f"[{index}/{total}] ❌ {error_msg}", Colors.RED, USE_COLORS))
+                print(
+                    colorize(f"[{index}/{total}] ❌ {error_msg}", Colors.RED, USE_COLORS))
                 return False, error_msg
 
         # Set a timeout for ffmpeg process (based on video duration, minimum 10 minutes)
@@ -1097,26 +1178,30 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
             try:
                 if os.path.exists(temp_output_path):
                     os.unlink(temp_output_path)
-                    file_logger.info(f"Removed temporary output file: {temp_output_path}")
+                    file_logger.info(
+                        f"Removed temporary output file: {temp_output_path}")
             except Exception as e:
-                file_logger.error(f"Failed to remove temporary output file: {str(e)}")
+                file_logger.error(
+                    f"Failed to remove temporary output file: {str(e)}")
 
             return False, error_output
 
         # Move the temporary output file to the final location
         try:
             shutil.move(temp_output_path, output_file)
-            file_logger.info(f"Moved temporary output file to final location: {output_file}")
+            file_logger.info(
+                f"Moved temporary output file to final location: {output_file}")
         except Exception as e:
             error_msg = f"Failed to move temporary output file to final location: {str(e)}"
             file_logger.error(error_msg)
             print(colorize(f"    ❌ {error_msg}", Colors.RED, USE_COLORS))
-            
+
             # Try to copy instead of move
             try:
                 shutil.copy2(temp_output_path, output_file)
-                file_logger.info(f"Copied temporary output file to final location: {output_file}")
-                
+                file_logger.info(
+                    f"Copied temporary output file to final location: {output_file}")
+
                 # Remove the temporary file
                 try:
                     os.unlink(temp_output_path)
@@ -1150,10 +1235,12 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
             warning_msg = "Could not read metadata from output file, file may be corrupt but will continue"
             file_logger.warning(warning_msg)
             console_logger.warning(f"[{index}/{total}] ⚠️ {warning_msg}")
-            print(colorize(f"[{index}/{total}] ⚠️ {warning_msg}", Colors.YELLOW, USE_COLORS))
+            print(
+                colorize(f"[{index}/{total}] ⚠️ {warning_msg}", Colors.YELLOW, USE_COLORS))
             new_width, new_height = "unknown", "unknown"
             new_bitrate = "unknown"
-            new_audio = {"codec": "unknown", "channels": "unknown", "bitrate": "unknown"}
+            new_audio = {"codec": "unknown",
+                         "channels": "unknown", "bitrate": "unknown"}
         else:
             # Extract information from new metadata
             new_width, new_height = get_resolution(new_metadata)
@@ -1282,21 +1369,26 @@ def main():
 
     # Test ffmpeg capabilities if requested or we're not explicitly disabling hardware acceleration
     working_hwaccel = None
-    
+
     if args.test or not args.no_hwaccel:
         file_logger.info("Testing ffmpeg capabilities")
         console_logger.info("Testing ffmpeg capabilities")
         working_hwaccel = test_ffmpeg_capability()
-        
+
         if working_hwaccel and working_hwaccel["hwaccel"] and not args.no_hwaccel:
-            file_logger.info(f"Using hardware acceleration: {working_hwaccel['name']}")
-            console_logger.info(f"Using hardware acceleration: {working_hwaccel['name']}")
-            print(colorize(f"✅ Using {working_hwaccel['name']}", Colors.GREEN, USE_COLORS))
+            file_logger.info(
+                f"Using hardware acceleration: {working_hwaccel['name']}")
+            console_logger.info(
+                f"Using hardware acceleration: {working_hwaccel['name']}")
+            print(
+                colorize(f"✅ Using {working_hwaccel['name']}", Colors.GREEN, USE_COLORS))
         else:
-            working_hwaccel = {"name": "Software encoding only", "hwaccel": None}
+            working_hwaccel = {
+                "name": "Software encoding only", "hwaccel": None}
             file_logger.info("Using software encoding only")
             console_logger.info("Using software encoding only")
-            print(colorize("⚠️ Using software encoding only", Colors.YELLOW, USE_COLORS))
+            print(colorize("⚠️ Using software encoding only",
+                  Colors.YELLOW, USE_COLORS))
 
     # Check if input directory exists
     if not os.path.isdir(args.input_dir):
@@ -1458,11 +1550,11 @@ def main():
 
         # Transcode the video to the work directory
         success, error_message = transcode_video(
-            video_file, 
-            str(work_output_file), 
-            i, 
-            len(video_files), 
-            file_logger, 
+            video_file,
+            str(work_output_file),
+            i,
+            len(video_files),
+            file_logger,
             console_logger,
             working_hwaccel
         )
@@ -1634,7 +1726,8 @@ def main():
                     f.write(f"{category.upper()} ({len(files)}):\n")
                     for filename, error_msg in files:
                         # Write the filename and a condensed error message
-                        condensed_error = error_msg.replace('\n', ' ').strip() if error_msg else "Unknown error"
+                        condensed_error = error_msg.replace(
+                            '\n', ' ').strip() if error_msg else "Unknown error"
                         if len(condensed_error) > 100:
                             condensed_error = condensed_error[:97] + "..."
                         f.write(f"- {filename} | {condensed_error}\n")
