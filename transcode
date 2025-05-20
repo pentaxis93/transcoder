@@ -1,3 +1,58 @@
+#!/usr/bin/env python3 -u
+"""
+Video Transcoder Script
+This script recursively searches for video files and transcodes them using ffmpeg,
+optimized for small size and mobile viewing.
+
+Add the -u flag to the command line to use unbuffered output:
+python3 -u transcode.py /path/to/videos
+"""
+import os
+import sys
+import subprocess
+import argparse
+import logging
+import json
+import time
+import signal
+from pathlib import Path
+from datetime import datetime
+
+# Force unbuffered output
+sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
+sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
+
+# Setup logging to both file and console
+def setup_logging():
+    log_file = f"transcode_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    
+    # We'll use two separate loggers - one for console (with no filenames) and one for file (with all details)
+    
+    # File logger (with all details)
+    file_logger = logging.getLogger("file_logger")
+    file_logger.setLevel(logging.INFO)
+    
+    # Console logger (generic info only)
+    console_logger = logging.getLogger("console_logger")  
+    console_logger.setLevel(logging.INFO)
+    
+    # Create file handler with full details
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    file_logger.addHandler(file_handler)
+    
+    # Create console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(console_formatter)
+    console_logger.addHandler(console_handler)
+    
+    # We'll return both loggers
+    return file_logger, console_logger, log_file
+
 # Categorize error messages
 def categorize_error(error_message):
     # Define common error patterns and their categories
@@ -16,53 +71,59 @@ def categorize_error(error_message):
         ("Out of memory", "Memory Error"),
         ("Unknown encoder", "Missing Codec"),
     ]
-
+    
     # Check if error message contains any of the known patterns
     for pattern, category in error_categories:
         if pattern in error_message:
             return category
-
+    
     # Default category for unrecognized errors
-    return "Other Error"#!/usr/bin/env python3
-import os
-import sys
-import subprocess
-import argparse
-import logging
-import json
-from pathlib import Path
-from datetime import datetime
+    return "Other Error"
 
-# Setup logging to both file and console
-def setup_logging():
-    log_file = f"transcode_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
-    # We'll use two separate loggers - one for console (with no filenames) and one for file (with all details)
-
-    # File logger (with all details)
-    file_logger = logging.getLogger("file_logger")
-    file_logger.setLevel(logging.INFO)
-
-    # Console logger (generic info only)
-    console_logger = logging.getLogger("console_logger")
-    console_logger.setLevel(logging.INFO)
-
-    # Create file handler with full details
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.INFO)
-    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(file_formatter)
-    file_logger.addHandler(file_handler)
-
-    # Create console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(console_formatter)
-    console_logger.addHandler(console_handler)
-
-    # We'll return both loggers
-    return file_logger, console_logger, log_file
+# Find all video files in a directory and its subdirectories
+def find_video_files(input_dir):
+    # Convert input_dir to absolute path to ensure consistent path handling
+    input_dir_abs = os.path.abspath(input_dir)
+    
+    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp']
+    video_files = []
+    all_dirs = set()
+    dirs_with_videos = set()
+    
+    for root, dirs, files in os.walk(input_dir):
+        # Convert path to normalized absolute path
+        abs_root = os.path.abspath(root)
+        all_dirs.add(abs_root)
+        
+        has_video = False
+        for file in files:
+            if any(file.lower().endswith(ext) for ext in video_extensions):
+                # Use Path for better handling of special characters
+                video_path = Path(root) / file
+                video_files.append(str(video_path))
+                has_video = True
+        
+        if has_video:
+            # Mark this directory as having videos
+            dirs_with_videos.add(abs_root)
+            
+            # Also mark all parent directories up to the input directory
+            current = abs_root
+            while current != input_dir_abs and os.path.dirname(current) != current:
+                parent = os.path.dirname(current)
+                if parent:
+                    dirs_with_videos.add(parent)
+                    current = parent
+                else:
+                    break
+    
+    # Find directories without videos
+    empty_dirs = all_dirs - dirs_with_videos
+    
+    # Sort directories for better readability
+    empty_dirs = sorted(empty_dirs)
+    
+    return video_files, empty_dirs
 
 # Get video file metadata using ffprobe
 def get_video_metadata(video_path, file_logger):
@@ -85,14 +146,14 @@ def get_video_metadata(video_path, file_logger):
 def get_duration(metadata):
     if not metadata:
         return None
-
+    
     # Try to get duration from format section
     if "format" in metadata and "duration" in metadata["format"]:
         try:
             return float(metadata["format"]["duration"])
         except (ValueError, TypeError):
             pass
-
+    
     # If not found in format, try streams
     for stream in metadata.get("streams", []):
         if "duration" in stream:
@@ -100,7 +161,7 @@ def get_duration(metadata):
                 return float(stream["duration"])
             except (ValueError, TypeError):
                 pass
-
+    
     return None
 
 # Convert HH:MM:SS.MS time format to seconds
@@ -125,7 +186,7 @@ def time_to_seconds(time_str):
             elif len(parts) == 2:  # MM:SS
                 minutes, seconds = parts
                 return int(minutes) * 60 + int(seconds)
-
+        
         # If none of the above formats match, try direct conversion
         return float(time_str)
     except (ValueError, TypeError):
@@ -135,50 +196,84 @@ def time_to_seconds(time_str):
 def get_resolution(metadata):
     if not metadata:
         return "unknown", "unknown"
-
+    
     for stream in metadata.get("streams", []):
         if stream.get("codec_type") == "video":
             return stream.get("width", "unknown"), stream.get("height", "unknown")
-
+    
     return "unknown", "unknown"
 
-# Find all video files in a directory and its subdirectories
-def find_video_files(input_dir):
-    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp']
-    video_files = []
-    all_dirs = set()
-    dirs_with_videos = set()
-
-    for root, dirs, files in os.walk(input_dir):
-        # Convert path to normalized absolute path
-        abs_root = os.path.abspath(root)
-        all_dirs.add(abs_root)
-
-        has_video = False
-        for file in files:
-            if any(file.lower().endswith(ext) for ext in video_extensions):
-                # Use Path for better handling of special characters
-                video_path = Path(root) / file
-                video_files.append(str(video_path))
-                has_video = True
-
-        if has_video:
-            # Mark this directory as having videos
-            dirs_with_videos.add(abs_root)
-
-            # Also mark all parent directories
-            parent = os.path.dirname(abs_root)
-            while parent and parent != input_dir and os.path.commonpath([parent, input_dir]) == input_dir:
-                dirs_with_videos.add(parent)
-                parent = os.path.dirname(parent)
-
-    # Find directories without videos
-    empty_dirs = all_dirs - dirs_with_videos
-
-    # Sort directories for better readability
-    empty_dirs = sorted(empty_dirs)
-
-    return video_files, empty_dirs
+# Simple progress monitoring for FFmpeg
+def monitor_ffmpeg_progress(process, total_duration, file_index, total_files):
+    """Monitor FFmpeg progress and print updates in place"""
+    start_time = time.time()
+    last_update = start_time
+    update_interval = 1  # seconds
+    
+    # Print initial message
+    print(f"[{file_index}/{total_files}] Starting encoding...", end="\r", flush=True)
+    
+    # Monitor the process while it's running
+    while process.poll() is None:
+        # Sleep briefly to avoid CPU spinning
+        time.sleep(0.5)
+        
+        current_time = time.time()
+        elapsed = current_time - start_time
+        
+        # Only update display periodically
+        if (current_time - last_update) >= update_interval:
+            last_update = current_time
+            
+            # Estimate progress if we know the duration
+            if total_duration > 0:
+                # Very rough progress estimate based on elapsed time and typical encoding speed
+                rough_progress = min(95, (elapsed / (total_duration * 1.5)) * 100)
+                
+                # Format elapsed time
+                elapsed_mins = int(elapsed / 60)
+                elapsed_secs = int(elapsed % 60)
+                
+                # Calculate ETA
+                if rough_progress > 0:
+                    total_estimated_seconds = (elapsed / rough_progress) * 100
+                    remaining_seconds = total_estimated_seconds - elapsed
+                    eta_mins = int(remaining_seconds / 60)
+                    eta_secs = int(remaining_seconds % 60)
+                    eta_str = f", ETA: {eta_mins}m {eta_secs}s"
+                else:
+                    eta_str = ""
+                
+                # Create a progress bar
+                bar_length = 30
+                filled_length = int(bar_length * rough_progress / 100)
+                bar = '█' * filled_length + '░' * (bar_length - filled_length)
+                
+                # Display progress with progress bar
+                progress_msg = f"[{file_index}/{total_files}] [{bar}] {rough_progress:.1f}% | {elapsed_mins}m {elapsed_secs}s elapsed{eta_str}"
+                
+                # Make sure the line is long enough to overwrite previous line
+                progress_msg = progress_msg.ljust(80)
+                
+                # Print with carriage return to update in place
+                print(progress_msg, end="\r", flush=True)
+            else:
+                # Just show elapsed time if we don't know duration
+                elapsed_mins = int(elapsed / 60)
+                elapsed_secs = int(elapsed % 60)
+                progress_msg = f"[{file_index}/{total_files}] Processing... {elapsed_mins}m {elapsed_secs}s elapsed"
+                progress_msg = progress_msg.ljust(80)
+                print(progress_msg, end="\r", flush=True)
+    
+    # Print final message with newline when process completes
+    total_elapsed = time.time() - start_time
+    elapsed_mins = int(total_elapsed / 60)
+    elapsed_secs = int(total_elapsed % 60)
+    final_msg = f"[{file_index}/{total_files}] Encoding completed in {elapsed_mins}m {elapsed_secs}s"
+    final_msg = final_msg.ljust(80)  # Make sure we overwrite the whole progress line
+    print(final_msg)
+    
+    return process.returncode
 
 # Transcode a video file
 def transcode_video(input_file, output_file, index, total, file_logger, console_logger):
@@ -187,22 +282,32 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
     # Log to console without filename
     console_logger.info(f"[{index}/{total}] ▶️ Starting transcoding")
     print(f"[{index}/{total}] ▶️ Starting transcoding")
-
+    
     try:
         # Get original metadata and file size
         original_size = os.path.getsize(input_file)
         metadata = get_video_metadata(input_file, file_logger)
         orig_width, orig_height = get_resolution(metadata)
-
+        
+        # Get the duration for percentage calculation
+        duration_seconds = get_duration(metadata)
+        if duration_seconds:
+            file_logger.info(f"Video duration: {duration_seconds:.2f} seconds")
+            print(f"    Duration: {duration_seconds/60:.2f} minutes")
+        else:
+            file_logger.warning("Could not determine video duration")
+            print("    Duration: Unknown")
+            duration_seconds = 0  # Fallback value
+        
         # Log original video details for diagnostics
         file_logger.info(f"Original video resolution: {orig_width}x{orig_height}")
         file_logger.info(f"Original video size: {original_size/1024/1024:.2f} MB")
         print(f"    Resolution: {orig_width}x{orig_height}, Size: {original_size/1024/1024:.2f} MB")
-
+        
         # Use Path objects for better handling of special characters
         input_path = Path(input_file)
         output_path = Path(output_file)
-
+        
         # Construct the ffmpeg command with all the requested tweaks
         cmd = [
             "ffmpeg",
@@ -217,9 +322,9 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
             # Only downscale if resolution is higher than 720p
             "-vf", "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,setsar=1",
             "-r", "24",
-            "-c:a", "aac",
+            "-c:a", "aac", 
             "-b:a", "48k",  # Reduced from 64k - sufficient for dialogue
-            "-ac", "1",
+            "-ac", "1", 
             "-ar", "32000",  # Reduced from 44100 - sufficient for dialogue
             "-af", "loudnorm,bandpass=f=1500:width_type=h:width=200",  # Audio normalization and voice optimization
             "-pix_fmt", "yuv420p",
@@ -230,120 +335,95 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
             "-v", "warning",  # Reduce verbosity - only show warnings and errors
             str(output_path)
         ]
-
+        
         # Log the ffmpeg command for diagnostics (without the actual filename)
         cmd_log = ' '.join(cmd)
         cmd_log = cmd_log.replace(str(input_path), "INPUT_FILE").replace(str(output_path), "OUTPUT_FILE")
         file_logger.info(f"Running ffmpeg command: {cmd_log}")
-
-        # Run the ffmpeg command
+        
+        # Start the ffmpeg process
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            universal_newlines=True,
-            bufsize=1
+            text=True,
+            bufsize=1,
+            preexec_fn=os.setsid  # Make the process a process group leader
         )
-
-        # Collect all error output for diagnostics
-        error_lines = []
-        last_progress = None
-
-        # Process stderr to capture progress
-        for line in process.stderr:
-            error_lines.append(line)
-
-            # Print progress updates when they contain frame information
-            if "frame=" in line and "time=" in line:
-                # Extract key progress info
-                progress_info = {}
-                for part in line.strip().split():
-                    if "=" in part:
-                        key, value = part.split("=", 1)
-                        progress_info[key] = value
-
-                # Extract the most important info
-                frame = progress_info.get("frame", "?")
-                time = progress_info.get("time", "?")
-                fps = progress_info.get("fps", "?")
-                speed = progress_info.get("speed", "?")
-
-                # Create a concise progress message
-                progress_msg = f"[{index}/{total}] Frame: {frame}, Time: {time}, FPS: {fps}, Speed: {speed}"
-
-                # Update the line in place
-                print(f"\r{progress_msg}", end="")
-                last_progress = progress_msg
-
-        # Wait for process to complete
-        process.wait()
-        if last_progress:
-            print()  # Add a newline after the progress display
-
-        if process.returncode != 0:
-            # Log the error output to help diagnose the problem
-            file_logger.error(f"Transcoding failed for file #{index}: {os.path.basename(input_file)}")
-            file_logger.error("FFmpeg error output:")
-            for line in error_lines:
-                file_logger.error(f"  {line.strip()}")
-
-            # Log sanitized error message to console
-            console_logger.error(f"[{index}/{total}] ❌ Transcoding failed")
-            print(f"[{index}/{total}] ❌ Transcoding failed")
-
-            # Show a few of the last error lines (sanitized)
-            if error_lines:
-                error_preview = []
-                for line in error_lines[-5:]:
-                    # Skip progress lines in error summary
-                    if "frame=" in line and "time=" in line:
-                        continue
-                    # Sanitize the error message to remove any filenames
-                    sanitized = line.strip()
-                    if input_file in sanitized:
-                        sanitized = sanitized.replace(os.path.basename(input_file), "INPUT_FILE")
-                    if output_file in sanitized:
-                        sanitized = sanitized.replace(os.path.basename(output_file), "OUTPUT_FILE")
-                    error_preview.append(sanitized)
-
-                if error_preview:
-                    print("    Error details:")
-                    for line in error_preview:
-                        print(f"    {line}")
-
-            return False
-
+        
+        # Set up a separate thread or process to collect ffmpeg output while we monitor progress
+        error_output = ""
+        try:
+            # Monitor progress
+            return_code = monitor_ffmpeg_progress(process, duration_seconds, index, total)
+            
+            # Collect any error output
+            error_output = process.stderr.read() if process.stderr else ""
+            
+            if return_code != 0:
+                # Log the error output
+                file_logger.error(f"Transcoding failed for file #{index}: {os.path.basename(input_file)}")
+                file_logger.error(f"FFmpeg error output: {error_output}")
+                
+                # Log sanitized error message to console
+                console_logger.error(f"[{index}/{total}] ❌ Transcoding failed with code {return_code}")
+                print(f"[{index}/{total}] ❌ Transcoding failed with code {return_code}")
+                
+                # Show error summary
+                error_lines = error_output.splitlines()
+                if error_lines:
+                    print("    Error details (last 5 lines):")
+                    for line in error_lines[-5:]:
+                        # Skip progress info in the error summary
+                        if not line.strip().startswith("frame="):
+                            print(f"    {line}")
+                
+                return False, error_output
+        except Exception as e:
+            # Clean up process if monitoring fails
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            except:
+                pass
+            
+            # Log the exception
+            file_logger.error(f"Error monitoring transcoding process: {str(e)}")
+            console_logger.error(f"[{index}/{total}] ❌ Error during monitoring: {str(e)}")
+            print(f"[{index}/{total}] ❌ Error during monitoring: {str(e)}")
+            return False, str(e)
+        
         # Get new file size and calculate savings
         new_size = os.path.getsize(output_file)
         savings_bytes = original_size - new_size
         savings_percent = (savings_bytes / original_size) * 100 if original_size > 0 else 0
-
+        
         # Get new metadata
         new_metadata = get_video_metadata(output_file, file_logger)
         new_width, new_height = get_resolution(new_metadata)
-
+        
         # Log the results (full file name in log file only)
         file_logger.info(f"Completed file #{index}/{total}: {os.path.basename(input_file)}")
         file_logger.info(f"  Original resolution: {orig_width}x{orig_height}, New resolution: {new_width}x{new_height}")
         file_logger.info(f"  Original size: {original_size/1024/1024:.2f} MB, New size: {new_size/1024/1024:.2f} MB")
         file_logger.info(f"  Space saved: {savings_bytes/1024/1024:.2f} MB ({savings_percent:.2f}%)")
-
+        
         # Console output (without filename)
         console_logger.info(f"[{index}/{total}] ✅ Transcoding completed")
         print(f"[{index}/{total}] ✅ Transcoding completed")
         print(f"    Original: {orig_width}x{orig_height}, {original_size/1024/1024:.2f} MB")
         print(f"    New: {new_width}x{new_height}, {new_size/1024/1024:.2f} MB")
         print(f"    Saved: {savings_bytes/1024/1024:.2f} MB ({savings_percent:.2f}%)")
-
-        return True
-
+        
+        return True, None
+    
     except Exception as e:
         # Log error with filename to file only
-        file_logger.error(f"Error transcoding file #{index}: {os.path.basename(input_file)} - {str(e)}")
+        error_message = str(e)
+        file_logger.error(f"Error transcoding file #{index}: {os.path.basename(input_file)} - {error_message}")
         # Log error to console without filename
-        console_logger.error(f"[{index}/{total}] ❌ Error: {str(e)}")
-        print(f"[{index}/{total}] ❌ Error: {str(e)}")
-        return False
+        console_logger.error(f"[{index}/{total}] ❌ Error: {error_message}")
+        print(f"[{index}/{total}] ❌ Error: {error_message}")
+        return False, error_message
 
 def main():
     # Parse command line arguments
@@ -352,44 +432,44 @@ def main():
     parser.add_argument("-s", "--success_dir", help="Output directory for successfully transcoded files", default="transcoded_success")
     parser.add_argument("-e", "--error_dir", help="Output directory for files that failed transcoding", default="transcoded_error")
     args = parser.parse_args()
-
+    
     # Setup logging
     file_logger, console_logger, log_file = setup_logging()
-
+    
     # Check if input directory exists
     if not os.path.isdir(args.input_dir):
         file_logger.error(f"Input directory does not exist: {args.input_dir}")
         console_logger.error(f"Input directory does not exist: {args.input_dir}")
         sys.exit(1)
-
+    
     # Create output directories if they don't exist
     success_dir = Path(args.success_dir)
     error_dir = Path(args.error_dir)
     success_dir.mkdir(exist_ok=True)
     error_dir.mkdir(exist_ok=True)
-
+    
     # Files to track successful and failed transcodes
     success_list_file = "successful_transcodes.txt"
     failed_list_file = "failed_transcodes.txt"
     successful_files = []
     failed_files = []  # Will now store tuples of (filename, error_message)
-
+    
     # Find all video files in the input directory, and directories without videos
     file_logger.info(f"Searching for video files in {args.input_dir}")
     console_logger.info(f"Searching for video files in {args.input_dir}")
     video_files, empty_dirs = find_video_files(args.input_dir)
-
+    
     if not video_files:
         file_logger.warning("No video files found.")
         console_logger.warning("No video files found.")
         print("❌ No video files found in the specified directory.")
-
+        
         # If we found empty directories, still report those
         if empty_dirs:
             print(f"📁 Found {len(empty_dirs)} directories without video files:")
             for empty_dir in empty_dirs:
                 print(f"    - {empty_dir}")
-
+            
             # Write empty directories to failed list
             try:
                 with open(failed_list_file, 'w', encoding='utf-8') as f:
@@ -399,14 +479,14 @@ def main():
                 print(f"📝 Wrote list of {len(empty_dirs)} empty directories to {failed_list_file}")
             except Exception as e:
                 print(f"❌ Failed to write empty directories list: {str(e)}")
-
+        
         sys.exit(0)
-
+    
     file_logger.info(f"Found {len(video_files)} video files to transcode")
     file_logger.info(f"Log file: {log_file}")
     console_logger.info(f"Found {len(video_files)} video files to transcode")
     console_logger.info(f"Log file: {log_file}")
-
+    
     print(f"📁 Found {len(video_files)} video files to transcode")
     if empty_dirs:
         print(f"📁 Found {len(empty_dirs)} directories without video files")
@@ -414,19 +494,19 @@ def main():
     print(f"✅ Success directory: {success_dir}")
     print(f"❌ Error directory: {error_dir}")
     print("-" * 50)
-
+    
     # Transcode each video file
     successful = 0
     failed = 0
     total_original_size = 0
     total_new_size = 0
-
+    
     for i, video_file in enumerate(video_files, 1):
         # Create output filename (flat structure)
         basename = os.path.basename(video_file)
         output_file = success_dir / basename
         error_output_file = error_dir / basename
-
+        
         # Get original size for total calculation
         try:
             original_size = os.path.getsize(video_file)
@@ -435,10 +515,10 @@ def main():
             file_logger.error(f"Could not get file size for {video_file}: {str(e)}")
             print(f"[{i}/{len(video_files)}] ⚠️ Warning: Could not get file size")
             original_size = 0
-
+        
         # Transcode the video
         success, error_message = transcode_video(video_file, str(output_file), i, len(video_files), file_logger, console_logger)
-
+        
         if success:
             successful += 1
             successful_files.append(basename)
@@ -451,7 +531,7 @@ def main():
             failed += 1
             # Store both filename and error message
             failed_files.append((basename, error_message or "Unknown error"))
-
+            
             # Copy the original file to the error directory
             try:
                 # Using with blocks for safe file handling
@@ -465,9 +545,9 @@ def main():
                 file_logger.error(f"Failed to copy file to error directory: {basename} - {str(e)}")
                 console_logger.error(f"Failed to copy file #{i} to error directory")
                 print(f"[{i}/{len(video_files)}] ❌ Failed to copy file to error directory: {str(e)}")
-
+        
         print("-" * 50)  # Add separator between files
-
+    
     # Write successful and failed files to their respective lists
     try:
         with open(success_list_file, 'w', encoding='utf-8') as f:
@@ -479,31 +559,31 @@ def main():
         file_logger.error(f"Failed to write successful files list: {str(e)}")
         console_logger.error("Failed to write successful files list")
         print(f"❌ Failed to write successful files list: {str(e)}")
-
+    
     # Group failed files by error category
     if failed_files:
         try:
             errors_by_category = {}
-
+            
             # Group files by error category
             for filename, error_message in failed_files:
                 category = categorize_error(error_message)
                 if category not in errors_by_category:
                     errors_by_category[category] = []
                 errors_by_category[category].append((filename, error_message))
-
+            
             # Write the categorized failed files
             with open(failed_list_file, 'w', encoding='utf-8') as f:
                 f.write(f"FAILED TRANSCODES BY ERROR CATEGORY\n")
                 f.write(f"Total failed: {len(failed_files)}\n\n")
-
+                
                 # Write empty directories first if any
                 if empty_dirs:
                     f.write(f"DIRECTORIES WITHOUT VIDEO FILES ({len(empty_dirs)}):\n")
                     for empty_dir in empty_dirs:
                         f.write(f"- {empty_dir}\n")
                     f.write("\n")
-
+                
                 # Write each error category
                 for category, files in sorted(errors_by_category.items()):
                     f.write(f"{category.upper()} ({len(files)}):\n")
@@ -514,7 +594,7 @@ def main():
                             condensed_error = condensed_error[:97] + "..."
                         f.write(f"- {filename} | {condensed_error}\n")
                     f.write("\n")
-
+            
             file_logger.info(f"Wrote list of {len(failed_files)} failed files (in {len(errors_by_category)} categories) to {failed_list_file}")
             console_logger.info(f"Wrote list of {failed} failed files to file")
             print(f"📝 Wrote list of {failed} failed files (in {len(errors_by_category)} categories) to {failed_list_file}")
@@ -532,11 +612,11 @@ def main():
             print(f"📝 Wrote list of {len(empty_dirs)} empty directories to {failed_list_file}")
         except Exception as e:
             print(f"❌ Failed to write empty directories list: {str(e)}")
-
+    
     # Calculate total savings
     total_savings = total_original_size - total_new_size
     savings_percent = (total_savings / total_original_size) * 100 if total_original_size > 0 else 0
-
+    
     # Print summary with some visual enhancements
     print("\n" + "=" * 50)
     print(f"📊 SUMMARY")
@@ -552,7 +632,7 @@ def main():
     print(f"📋 Successful files list: {success_list_file}")
     print(f"📋 Failed files list: {failed_list_file}")
     print("=" * 50)
-
+    
     # Also log the summary details
     file_logger.info(f"Transcoding completed. {successful} successful, {failed} failed.")
     file_logger.info(f"Total original size: {total_original_size/1024/1024:.2f} MB")
