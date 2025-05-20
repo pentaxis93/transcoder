@@ -631,6 +631,7 @@ def main():
     parser.add_argument("input_dir", help="Input directory containing video files to transcode")
     parser.add_argument("-s", "--success_dir", help="Output directory for successfully transcoded files", default="transcoded_success")
     parser.add_argument("-e", "--error_dir", help="Output directory for files that failed transcoding", default="transcoded_error")
+    parser.add_argument("-w", "--work_dir", help="Temporary directory for files being processed", default="work_in_progress")
     parser.add_argument("-v", "--verbose", help="Enable verbose logging", action="store_true")
     args = parser.parse_args()
     
@@ -653,8 +654,10 @@ def main():
     # Create output directories if they don't exist
     success_dir = Path(args.success_dir)
     error_dir = Path(args.error_dir)
+    work_dir = Path(args.work_dir)
     success_dir.mkdir(exist_ok=True)
     error_dir.mkdir(exist_ok=True)
+    work_dir.mkdir(exist_ok=True)
     
     # Files to track successful and failed transcodes
     success_list_file = "successful_transcodes.txt"
@@ -707,6 +710,7 @@ def main():
     print(colorize(f"📝 Log file: {log_file}", Colors.GREY, USE_COLORS))
     print(colorize(f"✅ Success directory: {success_dir}", Colors.GREEN, USE_COLORS))
     print(colorize(f"❌ Error directory: {error_dir}", Colors.RED, USE_COLORS))
+    print(colorize(f"🔄 Work directory: {work_dir}", Colors.BLUE, USE_COLORS))
     
     # Divider before starting transcoding
     print("\n" + "═" * 70)
@@ -720,9 +724,10 @@ def main():
     total_new_size = 0
     
     for i, video_file in enumerate(video_files, 1):
-        # Create output filename (flat structure)
+        # Create output filenames (using work directory for in-progress files)
         basename = os.path.basename(video_file)
-        output_file = success_dir / basename
+        work_output_file = work_dir / basename
+        success_output_file = success_dir / basename
         error_output_file = error_dir / basename
         
         # Print file separator
@@ -739,28 +744,64 @@ def main():
             print(colorize(f"⚠️  Warning: Could not get file size", Colors.YELLOW, USE_COLORS))
             original_size = 0
         
-        # Transcode the video
-        success, error_message = transcode_video(video_file, str(output_file), i, len(video_files), file_logger, console_logger)
+        # Transcode the video to the work directory
+        success, error_message = transcode_video(video_file, str(work_output_file), i, len(video_files), file_logger, console_logger)
         
         if success:
-            successful += 1
-            successful_files.append(basename)
+            # Move the file from work directory to success directory
             try:
-                new_size = os.path.getsize(output_file)
+                # Get size of the transcoded file before moving
+                new_size = os.path.getsize(work_output_file)
                 total_new_size += new_size
+                
+                # Use shutil.move for atomic file operations
+                shutil.move(str(work_output_file), str(success_output_file))
+                file_logger.info(f"Moved transcoded file from work directory to success directory: {basename}")
+                console_logger.info(f"Moved file #{i} to success directory")
+                
+                successful += 1
+                successful_files.append(basename)
             except Exception as e:
-                file_logger.error(f"Could not get output file size for {output_file}: {str(e)}")
+                # If move fails, consider it a failed transcode
+                file_logger.error(f"Failed to move file from work to success directory: {basename} - {str(e)}")
+                console_logger.error(f"Failed to move file #{i} to success directory")
+                print(colorize(f"❌ Failed to move file to success directory: {str(e)}", Colors.RED, USE_COLORS))
+                
+                # Try to clean up the work file
+                try:
+                    if work_output_file.exists():
+                        work_output_file.unlink()
+                except:
+                    pass
+                
+                # Count as a failure and copy original to error directory
+                failed += 1
+                failed_files.append((basename, f"Failed to move transcoded file: {str(e)}"))
+                
+                # Copy the original file to the error directory
+                try:
+                    shutil.copy2(video_file, str(error_output_file))
+                    file_logger.info(f"Copied original file to error directory after move failure: {basename}")
+                    print(colorize(f"📋 Copied original file to error directory", Colors.YELLOW, USE_COLORS))
+                except Exception as copy_err:
+                    file_logger.error(f"Failed to copy file to error directory: {basename} - {str(copy_err)}")
+                    print(colorize(f"❌ Failed to copy file to error directory: {str(copy_err)}", Colors.RED, USE_COLORS))
         else:
+            # For failed transcodes
             failed += 1
-            # Store both filename and error message
             failed_files.append((basename, error_message or "Unknown error"))
+            
+            # Clean up any partial file in the work directory
+            try:
+                if work_output_file.exists():
+                    work_output_file.unlink()
+                    file_logger.info(f"Removed partial file from work directory: {basename}")
+            except Exception as e:
+                file_logger.error(f"Failed to remove partial file from work directory: {basename} - {str(e)}")
             
             # Copy the original file to the error directory
             try:
-                # Using with blocks for safe file handling
-                with open(video_file, 'rb') as src:
-                    with open(error_output_file, 'wb') as dst:
-                        dst.write(src.read())
+                shutil.copy2(video_file, str(error_output_file))
                 file_logger.info(f"Copied original file to error directory: {basename}")
                 console_logger.info(f"Copied file #{i} to error directory")
                 print(colorize(f"📋 Copied original file to error directory", Colors.YELLOW, USE_COLORS))
@@ -768,6 +809,21 @@ def main():
                 file_logger.error(f"Failed to copy file to error directory: {basename} - {str(e)}")
                 console_logger.error(f"Failed to copy file #{i} to error directory")
                 print(colorize(f"❌ Failed to copy file to error directory: {str(e)}", Colors.RED, USE_COLORS))
+    
+    # Clean up any leftover files in the work directory
+    try:
+        work_files = list(work_dir.glob('*'))
+        if work_files:
+            file_logger.warning(f"Found {len(work_files)} leftover files in work directory")
+            print(colorize(f"⚠️  Found {len(work_files)} leftover files in work directory", Colors.YELLOW, USE_COLORS))
+            for work_file in work_files:
+                try:
+                    work_file.unlink()
+                    file_logger.info(f"Removed leftover file from work directory: {work_file.name}")
+                except Exception as e:
+                    file_logger.error(f"Failed to remove leftover file from work directory: {work_file.name} - {str(e)}")
+    except Exception as e:
+        file_logger.error(f"Failed to clean up work directory: {str(e)}")
     
     # Calculate batch statistics
     batch_end_time = time.time()
