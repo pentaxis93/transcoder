@@ -569,18 +569,18 @@ def create_encoding_command(input_path, output_path, crf=28, preset="slower", tu
         "-c:v", "libx265",
         "-preset", preset,
         # Enhanced x265 parameters
-        "-x265-params", "limit-refs=3:no-amp=1:rd=4:aq-mode=2:bframes=4",
-        "-crf", str(crf),
-        "-g", "48",  # Keyframe every 2 seconds at 24fps - better mobile seeking
+        "-x265-params", "limit-refs=4:no-amp=1:rd=4:aq-mode=3:bframes=5:psy-rd=1.0:psy-rdoq=2.0",
+        "-crf", "23",
+        "-g", "96",  # Keyframe every 4 seconds at 24fps - better mobile seeking
         # Only downscale if resolution is higher than 720p
-        "-vf", "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,setsar=1",
-        "-r", "24",
+        "-vf", "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,setsar=1:1",
+        # "-r", "24",
         "-c:a", "aac",
-        "-b:a", "48k",  # Reduced from 64k - sufficient for dialogue
+        "-b:a", "64k",  # Reduced from 64k - sufficient for dialogue
         "-ac", "1",
-        "-ar", "32000",  # Reduced from 44100 - sufficient for dialogue
+        "-ar", "44100",  # Reduced from 44100 - sufficient for dialogue
         "-pix_fmt", "yuv420p",
-        "-profile:v", "main", "-level", "3.1",
+        "-profile:v", "main", "-level", "4.1",
         "-movflags", "+faststart",
         "-metadata", "title=", "-metadata", "comment=",
         "-threads", "0",  # Use all available CPU cores
