@@ -1185,12 +1185,106 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
 
             return False, error_output
 
-        # Get new file size 
+                    # Get new file size 
         new_size = os.path.getsize(temp_output_path)
         
         # Compare sizes to determine destination directory (this is part of the new logic)
         is_larger = new_size > original_size
         
+        # Verify the file is not corrupt by checking its size and getting metadata
+        if new_size < 10000:  # Less than 10KB
+            error_msg = f"Output file is too small ({human_size(new_size)}), likely corrupt"
+            file_logger.error(error_msg)
+            console_logger.error(
+                f"[{index}/{total}] ❌ Error: Output file too small")
+            print(colorize(
+                f"[{index}/{total}] ❌ Error: Output file is suspiciously small ({human_size(new_size)})", Colors.RED, USE_COLORS))
+            return False, error_msg
+
+        # Get new metadata
+        new_metadata = get_video_metadata(output_file, file_logger)
+        if not new_metadata:
+            warning_msg = "Could not read metadata from output file, file may be corrupt but will continue"
+            file_logger.warning(warning_msg)
+            console_logger.warning(f"[{index}/{total}] ⚠️ {warning_msg}")
+            print(
+                colorize(f"[{index}/{total}] ⚠️ {warning_msg}", Colors.YELLOW, USE_COLORS))
+            new_width, new_height = "unknown", "unknown"
+            new_bitrate = "unknown"
+            new_audio = {"codec": "unknown",
+                         "channels": "unknown", "bitrate": "unknown"}
+        else:
+            # Extract information from new metadata
+            new_width, new_height = get_resolution(new_metadata)
+            new_bitrate = get_bitrate(new_metadata)
+            new_audio = get_audio_details(new_metadata)
+
+        # Log the results (full file name in log file only)
+        file_logger.info(
+            f"Completed file #{index}/{total}: {os.path.basename(input_file)}")
+        file_logger.info(
+            f"  Original resolution: {orig_width}x{orig_height}, New resolution: {new_width}x{new_height}")
+        file_logger.info(
+            f"  Original size: {original_size/1024/1024:.2f} MB, New size: {new_size/1024/1024:.2f} MB")
+        
+        # Calculate savings (can be negative for larger files)
+        savings_bytes = original_size - new_size
+        savings_percent = (savings_bytes / original_size) * 100 if original_size > 0 else 0
+        
+        file_logger.info(
+            f"  Space saved: {savings_bytes/1024/1024:.2f} MB ({savings_percent:.2f}%)")
+
+        # Console output - comprehensive summary
+        print(colorize(
+            f"[{index}/{total}] ✅ Transcoding completed successfully", Colors.GREEN, USE_COLORS))
+
+        # Create a summary box
+        print("\n" + "─" * 50)
+        print(colorize("    TRANSCODING SUMMARY",
+              Colors.BOLD + Colors.CYAN, USE_COLORS))
+        print("─" * 50)
+
+        # File information
+        print(
+            f"    File: {colorize('#'+str(index), Colors.BOLD, USE_COLORS)} of {total}")
+
+        # Before/After comparison table
+        print("\n    " + colorize("BEFORE:", Colors.YELLOW, USE_COLORS) +
+              " " * 18 + colorize("AFTER:", Colors.GREEN, USE_COLORS))
+        print(f"    Resolution:  {orig_width}x{orig_height}" + " " * (
+            14 - len(f"{orig_width}x{orig_height}")) + f"{new_width}x{new_height}")
+
+        # Bitrate comparison
+        orig_bitrate_str = f"{orig_bitrate/1000:.1f} kbps" if orig_bitrate != "unknown" else "unknown"
+        new_bitrate_str = f"{new_bitrate/1000:.1f} kbps" if new_bitrate != "unknown" else "unknown"
+        print(f"    Bitrate:     {orig_bitrate_str}" + " " *
+              (14 - len(orig_bitrate_str)) + f"{new_bitrate_str}")
+
+        # Size comparison with visual indicator
+        orig_size_str = f"{original_size/1024/1024:.2f} MB"
+        new_size_str = f"{new_size/1024/1024:.2f} MB"
+        print(f"    Size:        {orig_size_str}" + " " *
+              (14 - len(orig_size_str)) + f"{new_size_str}")
+
+        # Space savings with appropriate color based on whether file is larger or smaller
+        savings_str = f"{savings_bytes/1024/1024:.2f} MB ({savings_percent:.1f}%)"
+        if is_larger:
+            print(
+                f"    Space saved: {colorize(savings_str, Colors.MAGENTA, USE_COLORS)} (output is larger)")
+        else:
+            print(
+                f"    Space saved: {colorize(savings_str, Colors.GREEN, USE_COLORS)}")
+
+        # Encoding settings used
+        print("\n    " + colorize("ENCODING SETTINGS:", Colors.CYAN, USE_COLORS))
+        print(f"    Video codec:   {encoding_settings['codec']}")
+        print(f"    Quality:       CRF {encoding_settings['crf']}")
+        print(f"    Preset:        {encoding_settings['preset']}")
+        print(f"    Resolution:    {encoding_settings['resolution']}")
+        print(f"    Framerate:     {encoding_settings['framerate']}")
+        print(f"    Audio:         {encoding_settings['audio']}")
+        print("─" * 50)
+
         # Return successful but also indicate if output is larger than input
         return True, None, is_larger, new_size, temp_output_path
 
