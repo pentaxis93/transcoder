@@ -1185,125 +1185,14 @@ def transcode_video(input_file, output_file, index, total, file_logger, console_
 
             return False, error_output
 
-        # Move the temporary output file to the final location
-        try:
-            shutil.move(temp_output_path, output_file)
-            file_logger.info(
-                f"Moved temporary output file to final location: {output_file}")
-        except Exception as e:
-            error_msg = f"Failed to move temporary output file to final location: {str(e)}"
-            file_logger.error(error_msg)
-            print(colorize(f"    ❌ {error_msg}", Colors.RED, USE_COLORS))
-
-            # Try to copy instead of move
-            try:
-                shutil.copy2(temp_output_path, output_file)
-                file_logger.info(
-                    f"Copied temporary output file to final location: {output_file}")
-
-                # Remove the temporary file
-                try:
-                    os.unlink(temp_output_path)
-                except:
-                    pass
-            except Exception as e2:
-                error_msg = f"Failed to copy temporary output file to final location: {str(e2)}"
-                file_logger.error(error_msg)
-                print(colorize(f"    ❌ {error_msg}", Colors.RED, USE_COLORS))
-                return False, error_msg
-
-        # Get new file size and calculate savings
-        new_size = os.path.getsize(output_file)
-        savings_bytes = original_size - new_size
-        savings_percent = (savings_bytes / original_size) * \
-            100 if original_size > 0 else 0
-
-        # Verify the file is not corrupt by checking its size and getting metadata
-        if new_size < 10000:  # Less than 10KB
-            error_msg = f"Output file is too small ({human_size(new_size)}), likely corrupt"
-            file_logger.error(error_msg)
-            console_logger.error(
-                f"[{index}/{total}] ❌ Error: Output file too small")
-            print(colorize(
-                f"[{index}/{total}] ❌ Error: Output file is suspiciously small ({human_size(new_size)})", Colors.RED, USE_COLORS))
-            return False, error_msg
-
-        # Get new metadata
-        new_metadata = get_video_metadata(output_file, file_logger)
-        if not new_metadata:
-            warning_msg = "Could not read metadata from output file, file may be corrupt but will continue"
-            file_logger.warning(warning_msg)
-            console_logger.warning(f"[{index}/{total}] ⚠️ {warning_msg}")
-            print(
-                colorize(f"[{index}/{total}] ⚠️ {warning_msg}", Colors.YELLOW, USE_COLORS))
-            new_width, new_height = "unknown", "unknown"
-            new_bitrate = "unknown"
-            new_audio = {"codec": "unknown",
-                         "channels": "unknown", "bitrate": "unknown"}
-        else:
-            # Extract information from new metadata
-            new_width, new_height = get_resolution(new_metadata)
-            new_bitrate = get_bitrate(new_metadata)
-            new_audio = get_audio_details(new_metadata)
-
-        # Log the results (full file name in log file only)
-        file_logger.info(
-            f"Completed file #{index}/{total}: {os.path.basename(input_file)}")
-        file_logger.info(
-            f"  Original resolution: {orig_width}x{orig_height}, New resolution: {new_width}x{new_height}")
-        file_logger.info(
-            f"  Original size: {original_size/1024/1024:.2f} MB, New size: {new_size/1024/1024:.2f} MB")
-        file_logger.info(
-            f"  Space saved: {savings_bytes/1024/1024:.2f} MB ({savings_percent:.2f}%)")
-
-        # Console output - comprehensive summary
-        print(colorize(
-            f"[{index}/{total}] ✅ Transcoding completed successfully", Colors.GREEN, USE_COLORS))
-
-        # Create a summary box
-        print("\n" + "─" * 50)
-        print(colorize("    TRANSCODING SUMMARY",
-              Colors.BOLD + Colors.CYAN, USE_COLORS))
-        print("─" * 50)
-
-        # File information
-        print(
-            f"    File: {colorize('#'+str(index), Colors.BOLD, USE_COLORS)} of {total}")
-
-        # Before/After comparison table
-        print("\n    " + colorize("BEFORE:", Colors.YELLOW, USE_COLORS) +
-              " " * 18 + colorize("AFTER:", Colors.GREEN, USE_COLORS))
-        print(f"    Resolution:  {orig_width}x{orig_height}" + " " * (
-            14 - len(f"{orig_width}x{orig_height}")) + f"{new_width}x{new_height}")
-
-        # Bitrate comparison
-        orig_bitrate_str = f"{orig_bitrate/1000:.1f} kbps" if orig_bitrate != "unknown" else "unknown"
-        new_bitrate_str = f"{new_bitrate/1000:.1f} kbps" if new_bitrate != "unknown" else "unknown"
-        print(f"    Bitrate:     {orig_bitrate_str}" + " " *
-              (14 - len(orig_bitrate_str)) + f"{new_bitrate_str}")
-
-        # Size comparison with visual indicator
-        orig_size_str = f"{original_size/1024/1024:.2f} MB"
-        new_size_str = f"{new_size/1024/1024:.2f} MB"
-        print(f"    Size:        {orig_size_str}" + " " *
-              (14 - len(orig_size_str)) + f"{new_size_str}")
-
-        # Space savings
-        savings_str = f"{savings_bytes/1024/1024:.2f} MB ({savings_percent:.1f}%)"
-        print(
-            f"    Space saved: {colorize(savings_str, Colors.GREEN if savings_percent > 0 else Colors.RED, USE_COLORS)}")
-
-        # Encoding settings used
-        print("\n    " + colorize("ENCODING SETTINGS:", Colors.CYAN, USE_COLORS))
-        print(f"    Video codec:   {encoding_settings['codec']}")
-        print(f"    Quality:       CRF {encoding_settings['crf']}")
-        print(f"    Preset:        {encoding_settings['preset']}")
-        print(f"    Resolution:    {encoding_settings['resolution']}")
-        print(f"    Framerate:     {encoding_settings['framerate']}")
-        print(f"    Audio:         {encoding_settings['audio']}")
-        print("─" * 50)
-
-        return True, None
+        # Get new file size 
+        new_size = os.path.getsize(temp_output_path)
+        
+        # Compare sizes to determine destination directory (this is part of the new logic)
+        is_larger = new_size > original_size
+        
+        # Return successful but also indicate if output is larger than input
+        return True, None, is_larger, new_size, temp_output_path
 
     except Exception as e:
         # Log error with filename to file only
@@ -1332,6 +1221,8 @@ def main():
                         help="Output directory for successfully transcoded files", default="transcoded_success")
     parser.add_argument(
         "-e", "--error_dir", help="Output directory for files that failed transcoding", default="transcoded_error")
+    parser.add_argument(
+        "-l", "--larger_dir", help="Output directory for successfully transcoded files that are larger than the original", default="transcoded_larger")
     parser.add_argument(
         "-w", "--work_dir", help="Temporary directory for files being processed", default="work_in_progress")
     parser.add_argument("-v", "--verbose",
@@ -1400,13 +1291,16 @@ def main():
     # Create output directories if they don't exist
     success_dir = Path(args.success_dir)
     error_dir = Path(args.error_dir)
+    larger_dir = Path(args.larger_dir)
     work_dir = Path(args.work_dir)
     success_dir.mkdir(exist_ok=True)
     error_dir.mkdir(exist_ok=True)
+    larger_dir.mkdir(exist_ok=True)
     work_dir.mkdir(exist_ok=True)
 
     # Check write permissions for all directories
-    for dir_path, dir_name in [(success_dir, "success"), (error_dir, "error"), (work_dir, "work")]:
+    for dir_path, dir_name in [(success_dir, "success"), (error_dir, "error"), 
+                              (larger_dir, "larger"), (work_dir, "work")]:
         if not os.access(str(dir_path), os.W_OK):
             print(colorize(
                 f"❌ Error: No write permission to {dir_name} directory: {dir_path}", Colors.RED, USE_COLORS))
@@ -1415,8 +1309,10 @@ def main():
     # Files to track successful and failed transcodes
     success_list_file = "successful_transcodes.txt"
     failed_list_file = "failed_transcodes.txt"
+    larger_list_file = "larger_transcodes.txt"
     successful_files = []
     failed_files = []  # Will now store tuples of (filename, error_message)
+    larger_files = []  # New list for files where output is larger than input
 
     # Setup for batch processing statistics
     start_time = time.time()
@@ -1510,6 +1406,7 @@ def main():
     print(
         colorize(f"✅ Success directory: {success_dir}", Colors.GREEN, USE_COLORS))
     print(colorize(f"❌ Error directory: {error_dir}", Colors.RED, USE_COLORS))
+    print(colorize(f"📊 Larger output directory: {larger_dir}", Colors.MAGENTA, USE_COLORS))
     print(colorize(f"🔄 Work directory: {work_dir}", Colors.BLUE, USE_COLORS))
 
     # Divider before starting transcoding
@@ -1521,6 +1418,7 @@ def main():
     # Transcode each video file
     successful = 0
     failed = 0
+    larger = 0
     total_original_size = 0
     total_new_size = 0
 
@@ -1530,6 +1428,7 @@ def main():
         work_output_file = work_dir / basename
         success_output_file = success_dir / basename
         error_output_file = error_dir / basename
+        larger_output_file = larger_dir / basename
 
         # Print file separator
         print(colorize(f"\n[{i}/{len(video_files)}] Processing {i/len(video_files)*100:.1f}% complete",
@@ -1548,7 +1447,7 @@ def main():
             original_size = 0
 
         # Transcode the video to the work directory
-        success, error_message = transcode_video(
+        result = transcode_video(
             video_file,
             str(work_output_file),
             i,
@@ -1558,50 +1457,66 @@ def main():
             working_hwaccel
         )
 
+        if len(result) == 2:  # Old failure format
+            success, error_message = result
+            is_larger = False
+            new_size = 0
+            temp_output_path = None
+        else:  # New success format with is_larger information
+            success, error_message, is_larger, new_size, temp_output_path = result
+
         if success:
-            # Move the file from work directory to success directory
+            # Determine destination directory based on size comparison
+            destination_dir = larger_dir if is_larger else success_dir
+            destination_file = larger_output_file if is_larger else success_output_file
+            
+            # Log size comparison
+            size_diff = new_size - original_size
+            percentage = (size_diff / original_size) * 100 if original_size > 0 else 0
+            
+            if is_larger:
+                file_logger.info(f"Output file is larger than input: +{size_diff/1024/1024:.2f} MB ({percentage:.1f}%)")
+                file_logger.info(f"Moving to larger directory: {destination_dir}")
+                print(colorize(
+                    f"⚠️ Output file is larger than input: +{size_diff/1024/1024:.2f} MB ({percentage:.1f}%)", 
+                    Colors.MAGENTA, USE_COLORS))
+                print(colorize(
+                    f"📊 Moving to larger directory instead of success directory", 
+                    Colors.MAGENTA, USE_COLORS))
+                larger += 1
+                larger_files.append(basename)
+            else:
+                successful += 1
+                successful_files.append(basename)
+            
+            # Add new size to total
+            total_new_size += new_size
+            
+            # Move the file from work directory to destination directory
             try:
-                # Get size of the transcoded file before moving
-                if os.path.exists(work_output_file):
-                    new_size = os.path.getsize(work_output_file)
-                    total_new_size += new_size
-
-                    # Use shutil.move for atomic file operations
-                    shutil.move(str(work_output_file),
-                                str(success_output_file))
-                    file_logger.info(
-                        f"Moved transcoded file from work directory to success directory: {basename}")
-                    console_logger.info(
-                        f"Moved file #{i} to success directory")
-                    print(colorize(
-                        f"🔄 Moved transcoded file to success directory", Colors.GREEN, USE_COLORS))
-
-                    successful += 1
-                    successful_files.append(basename)
-                else:
-                    # This shouldn't happen since we check in transcode_video, but just in case
-                    error_msg = "Output file not found in work directory after successful transcode"
-                    file_logger.error(error_msg)
-                    console_logger.error(
-                        f"[{i}/{len(video_files)}] ❌ Error: {error_msg}")
-                    print(colorize(
-                        f"❌ Error: Output file not found after transcoding", Colors.RED, USE_COLORS))
-
-                    failed += 1
-                    failed_files.append((basename, error_msg))
+                # Use shutil.move for atomic file operations
+                shutil.move(str(temp_output_path), str(destination_file))
+                file_logger.info(
+                    f"Moved transcoded file from work directory to {'larger' if is_larger else 'success'} directory: {basename}")
+                console_logger.info(
+                    f"Moved file #{i} to {'larger' if is_larger else 'success'} directory")
+                print(colorize(
+                    f"🔄 Moved transcoded file to {'larger' if is_larger else 'success'} directory", 
+                    Colors.MAGENTA if is_larger else Colors.GREEN, USE_COLORS))
+                
             except Exception as e:
                 # If move fails, consider it a failed transcode
                 file_logger.error(
-                    f"Failed to move file from work to success directory: {basename} - {str(e)}")
+                    f"Failed to move file from work directory: {basename} - {str(e)}")
                 console_logger.error(
-                    f"Failed to move file #{i} to success directory")
+                    f"Failed to move file #{i} to destination directory")
                 print(colorize(
-                    f"❌ Failed to move file to success directory: {str(e)}", Colors.RED, USE_COLORS))
+                    f"❌ Failed to move file to destination directory: {str(e)}", Colors.RED, USE_COLORS))
 
                 # Try to clean up the work file
                 try:
-                    if os.path.exists(work_output_file):
-                        os.unlink(work_output_file)
+                    if os.path.exists(temp_output_path):
+                        os.unlink(temp_output_path)
                 except:
                     pass
 
@@ -1679,7 +1594,7 @@ def main():
     batch_mins = int((batch_elapsed % 3600) / 60)
     batch_secs = int(batch_elapsed % 60)
 
-    # Write successful and failed files to their respective lists
+    # Write successful, larger, and failed files to their respective lists
     try:
         with open(success_list_file, 'w', encoding='utf-8') as f:
             f.write('\n'.join(successful_files))
@@ -1694,6 +1609,22 @@ def main():
         console_logger.error("Failed to write successful files list")
         print(colorize(
             f"❌ Failed to write successful files list: {str(e)}", Colors.RED, USE_COLORS))
+    
+    # Write larger files list
+    try:
+        with open(larger_list_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(larger_files))
+        file_logger.info(
+            f"Wrote list of {len(larger_files)} larger output files to {larger_list_file}")
+        console_logger.info(
+            f"Wrote list of {larger} larger output files to file")
+        print(colorize(
+            f"📝 Wrote list of {larger} larger output files to {larger_list_file}", Colors.MAGENTA, USE_COLORS))
+    except Exception as e:
+        file_logger.error(f"Failed to write larger files list: {str(e)}")
+        console_logger.error("Failed to write larger files list")
+        print(colorize(
+            f"❌ Failed to write larger files list: {str(e)}", Colors.RED, USE_COLORS))
 
     # Group failed files by error category
     if failed_files:
@@ -1769,7 +1700,7 @@ def main():
 
     # Calculate average time per file
     avg_time_per_file = batch_elapsed / \
-        max(1, successful) if successful > 0 else 0
+        max(1, successful + larger) if (successful + larger) > 0 else 0
     avg_mins = int(avg_time_per_file / 60)
     avg_secs = int(avg_time_per_file % 60)
 
@@ -1781,7 +1712,8 @@ def main():
 
     # Results table
     print(colorize("\n  RESULTS", Colors.BOLD, USE_COLORS))
-    print(f"  ✅ Successfully transcoded: {successful} files")
+    print(f"  ✅ Successfully transcoded (smaller): {successful} files")
+    print(f"  📊 Successfully transcoded (larger): {larger} files")
     print(f"  ❌ Failed to transcode: {failed} files")
     if empty_dirs:
         print(f"  📁 Directories without videos: {len(empty_dirs)}")
@@ -1800,19 +1732,20 @@ def main():
     print(colorize("\n  TIME STATISTICS", Colors.BOLD, USE_COLORS))
     print(
         f"  🕒 Total processing time: {batch_hours}h {batch_mins}m {batch_secs}s")
-    if successful > 0:
+    if successful + larger > 0:
         print(f"  🕒 Average time per file: {avg_mins}m {avg_secs}s")
 
     # File locations
     print(colorize("\n  FILE LOCATIONS", Colors.BOLD, USE_COLORS))
     print(f"  📝 Log file: {log_file}")
     print(f"  📋 Successful files list: {success_list_file}")
+    print(f"  📋 Larger output files list: {larger_list_file}")
     print(f"  📋 Failed files list: {failed_list_file}")
     print("═" * 70)
 
     # Also log the summary details
     file_logger.info(
-        f"Transcoding completed. {successful} successful, {failed} failed.")
+        f"Transcoding completed. {successful} successful, {larger} larger, {failed} failed.")
     file_logger.info(
         f"Total original size: {total_original_size/1024/1024:.2f} MB")
     file_logger.info(f"Total new size: {total_new_size/1024/1024:.2f} MB")
@@ -1821,6 +1754,7 @@ def main():
     file_logger.info(
         f"Total processing time: {batch_hours}h {batch_mins}m {batch_secs}s")
     file_logger.info(f"Successful files list: {success_list_file}")
+    file_logger.info(f"Larger output files list: {larger_list_file}")
     file_logger.info(f"Failed files list: {failed_list_file}")
 
 
