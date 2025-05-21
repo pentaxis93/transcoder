@@ -569,12 +569,11 @@ def create_encoding_command(input_path, output_path, crf=28, preset="slower", tu
         "-c:v", "libx265",
         "-preset", preset,
         # Enhanced x265 parameters
-        "-x265-params", "limit-refs=4:no-amp=1:rd=4:aq-mode=3:bframes=5:psy-rd=1.0:psy-rdoq=2.0",
-        "-crf", "23",
+        "-x265-params", "limit-refs=3:no-amp=1:rd=4:aq-mode=3:bframes=5:psy-rd=1.0:psy-rdoq=2.0",
+        "-crf", "25",
         "-g", "96",  # Keyframe every 4 seconds at 24fps - better mobile seeking
         # Only downscale if resolution is higher than 720p
         "-vf", "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,setsar=1:1",
-        # "-r", "24",
         "-c:a", "aac",
         "-b:a", "64k",  # Reduced from 64k - sufficient for dialogue
         "-ac", "1",
