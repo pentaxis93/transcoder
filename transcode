@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Video Transcoder Script with Resume Capability and Special Character Handling
+Video Transcoder Script with Resume Capability, Special Character Handling, and Timeout Support
 Transcodes video files using ffmpeg with H.265/HEVC encoding optimized for small file size.
-Supports resuming interrupted batch operations and handles all special characters in filenames.
+Supports resuming interrupted batch operations and handles corrupted/incomplete files.
 
 Usage: python3 transcode.py [input_directory] [options]
 """
@@ -16,21 +16,22 @@ import json
 import time
 import shutil
 import hashlib
+import signal
 import unicodedata
 from pathlib import Path
 from datetime import datetime
 from typing import Tuple, List, Dict, Optional, Set
 
 # Constants
-VIDEO_EXTENSIONS = ['.mp4', '.avi', '.mkv', '.mov',
-                    '.wmv', '.flv', '.webm', '.m4v', '.3gp']
+VIDEO_EXTENSIONS = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp']
 MIN_FILE_SIZE = 1000  # 1KB minimum for valid video
 MIN_OUTPUT_SIZE = 10000  # 10KB minimum for valid output
 STATE_FILE = "transcode_state.json"
+FILE_CREATION_TIMEOUT = 60  # seconds to wait for output file creation
+FILE_GROWTH_TIMEOUT = 120  # seconds to wait if file stops growing
+GROWTH_CHECK_INTERVAL = 5  # seconds between file growth checks
 
 # ANSI color codes
-
-
 class Colors:
     RESET = "\033[0m"
     BOLD = "\033[1m"
@@ -65,26 +66,46 @@ def setup_logging(log_dir: Path = Path('.')) -> Tuple[logging.Logger, logging.Lo
     file_logger = logging.getLogger("file_logger")
     file_logger.setLevel(logging.DEBUG)
     file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(levelname)s - %(message)s'))
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     file_logger.addHandler(file_handler)
 
     # Console logger without file paths
     console_logger = logging.getLogger("console_logger")
     console_logger.setLevel(logging.INFO)
     console_handler = logging.StreamHandler()
-    console_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(levelname)s - %(message)s'))
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     console_logger.addHandler(console_handler)
 
     return file_logger, console_logger, str(log_file)
 
 
+def kill_process_tree(pid: int):
+    """Kill a process and all its children."""
+    try:
+        if os.name == 'nt':  # Windows
+            subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)],
+                         capture_output=True, check=False)
+        else:  # Unix-like
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            time.sleep(1)  # Give it a chance to terminate gracefully
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)  # Force kill if still running
+            except ProcessLookupError:
+                pass  # Process already dead
+    except Exception:
+        # If group kill fails, try to kill just the process
+        try:
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(1)
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def get_safe_temp_filename(original_path: Path, work_dir: Path) -> Path:
     """Generate a safe temporary filename for work directory."""
     # Create a hash of the original path to ensure uniqueness
-    path_hash = hashlib.md5(
-        str(original_path).encode('utf-8')).hexdigest()[:12]
+    path_hash = hashlib.md5(str(original_path).encode('utf-8')).hexdigest()[:12]
 
     # Get the original extension
     extension = original_path.suffix if original_path.suffix else '.mp4'
@@ -120,7 +141,7 @@ class TranscodeState:
     def __init__(self, state_file: Path = Path(STATE_FILE)):
         self.state_file = state_file
         self.state = {
-            "version": "1.1",
+            "version": "1.2",
             "input_dir": "",
             "start_time": None,
             "last_update": None,
@@ -400,11 +421,15 @@ def create_ffmpeg_command(input_path: Path, output_path: Path) -> List[str]:
     ]
 
 
-def monitor_progress(process: subprocess.Popen, duration: float, index: int, total: int,
-                     output_path: Path) -> Tuple[int, bool, str]:
-    """Monitor ffmpeg progress and display updates."""
+def monitor_progress_with_timeout(process: subprocess.Popen, duration: float, index: int, total: int,
+                                output_path: Path, file_logger: logging.Logger) -> Tuple[int, bool, str]:
+    """Monitor ffmpeg progress with timeout detection."""
     start_time = time.time()
     last_update = start_time
+    last_size_check = start_time
+    last_file_size = 0
+    file_created = False
+    no_growth_count = 0
     term_width = shutil.get_terminal_size().columns
 
     # Initial message
@@ -414,6 +439,51 @@ def monitor_progress(process: subprocess.Popen, duration: float, index: int, tot
         time.sleep(0.1)
         current_time = time.time()
         elapsed = current_time - start_time
+
+        # Check for file creation timeout
+        if not file_created and elapsed > FILE_CREATION_TIMEOUT:
+            file_logger.warning(f"Output file not created after {FILE_CREATION_TIMEOUT}s, terminating process")
+            print(f"\r{colorize(f'[{index}/{total}] ⚠️  Timeout: No output file created after {FILE_CREATION_TIMEOUT}s', Colors.RED):<{term_width-1}}")
+
+            # Kill the process
+            kill_process_tree(process.pid)
+
+            # Wait a bit for process to die
+            time.sleep(2)
+
+            return -1, False, f"Timeout: No output file created after {FILE_CREATION_TIMEOUT} seconds"
+
+        # Check file growth every GROWTH_CHECK_INTERVAL seconds
+        if (current_time - last_size_check) >= GROWTH_CHECK_INTERVAL:
+            last_size_check = current_time
+
+            if output_path.exists():
+                file_created = True
+                try:
+                    current_file_size = output_path.stat().st_size
+
+                    # Check if file is growing
+                    if current_file_size == last_file_size and current_file_size > 0:
+                        no_growth_count += 1
+
+                        # Check for growth timeout
+                        if no_growth_count * GROWTH_CHECK_INTERVAL >= FILE_GROWTH_TIMEOUT:
+                            file_logger.warning(f"Output file stopped growing for {FILE_GROWTH_TIMEOUT}s, terminating process")
+                            print(f"\r{colorize(f'[{index}/{total}] ⚠️  Timeout: Output file stopped growing', Colors.RED):<{term_width-1}}")
+
+                            # Kill the process
+                            kill_process_tree(process.pid)
+
+                            # Wait a bit for process to die
+                            time.sleep(2)
+
+                            return -2, True, f"Timeout: Output file stopped growing for {FILE_GROWTH_TIMEOUT} seconds"
+                    else:
+                        no_growth_count = 0  # Reset counter if file is growing
+
+                    last_file_size = current_file_size
+                except OSError:
+                    pass
 
         # Update display every second
         if (current_time - last_update) >= 1.0:
@@ -443,22 +513,25 @@ def monitor_progress(process: subprocess.Popen, duration: float, index: int, tot
                 else:
                     bar_color = Colors.GREEN
 
-                bar = colorize('█' * filled, bar_color) + \
-                    colorize('░' * (bar_length - filled), Colors.GREY)
+                bar = colorize('█' * filled, bar_color) + colorize('░' * (bar_length - filled), Colors.GREY)
 
                 # ETA calculation
                 eta_str = ""
                 if progress > 0:
                     eta_seconds = (elapsed / progress * 100) - elapsed
-                    eta_str = f" | ETA: {int(eta_seconds/60)}m {int(eta_seconds % 60)}s"
+                    eta_str = f" | ETA: {int(eta_seconds/60)}m {int(eta_seconds%60)}s"
 
                 # Format display
-                elapsed_str = f"{int(elapsed/60)}m {int(elapsed % 60)}s"
+                elapsed_str = f"{int(elapsed/60)}m {int(elapsed%60)}s"
                 progress_msg = f"[{index}/{total}] [{bar}] {progress:.1f}% | {elapsed_str} [{file_status}]{eta_str}"
             else:
                 # No duration info
-                elapsed_str = f"{int(elapsed/60)}m {int(elapsed % 60)}s"
+                elapsed_str = f"{int(elapsed/60)}m {int(elapsed%60)}s"
                 progress_msg = f"[{index}/{total}] Processing... {elapsed_str} [{file_status}]"
+
+            # Add warning if no file yet
+            if not file_created and elapsed > 30:
+                progress_msg += colorize(" ⚠️", Colors.YELLOW)
 
             print(f"\r{progress_msg:<{term_width-1}}", end="", flush=True)
 
@@ -477,17 +550,24 @@ def monitor_progress(process: subprocess.Popen, duration: float, index: int, tot
 
     # Final message
     total_time = time.time() - start_time
-    final_msg = f"[{index}/{total}] Encoding completed in {int(total_time/60)}m {int(total_time % 60)}s"
+    if returncode == -1:
+        final_msg = f"[{index}/{total}] Terminated due to file creation timeout"
+    elif returncode == -2:
+        final_msg = f"[{index}/{total}] Terminated due to file growth timeout"
+    else:
+        final_msg = f"[{index}/{total}] Encoding completed in {int(total_time/60)}m {int(total_time%60)}s"
+
     if file_created:
         final_size = output_path.stat().st_size
         final_msg += f" [{human_size(final_size)}]"
-    print(f"\r{colorize(final_msg, Colors.GREEN if file_created else Colors.RED):<{term_width-1}}")
+
+    print(f"\r{colorize(final_msg, Colors.GREEN if (file_created and returncode == 0) else Colors.RED):<{term_width-1}}")
 
     return returncode, file_created, error_output
 
 
 def print_transcoding_summary(index: int, total: int, original_info: Dict,
-                              original_size: int, new_size: int, is_larger: bool):
+                            original_size: int, new_size: int, is_larger: bool):
     """Print detailed transcoding summary."""
     print("\n" + "─" * 50)
     print(colorize("    TRANSCODING SUMMARY", Colors.BOLD + Colors.CYAN))
@@ -496,16 +576,13 @@ def print_transcoding_summary(index: int, total: int, original_info: Dict,
     print(f"    File: {colorize(f'#{index}', Colors.BOLD)} of {total}")
 
     # Before/After comparison
-    print(
-        f"\n    {colorize('BEFORE:', Colors.YELLOW):<25} {colorize('AFTER:', Colors.GREEN)}")
-    print(
-        f"    Resolution:  {original_info['width']}x{original_info['height']}")
+    print(f"\n    {colorize('BEFORE:', Colors.YELLOW):<25} {colorize('AFTER:', Colors.GREEN)}")
+    print(f"    Resolution:  {original_info['width']}x{original_info['height']}")
 
     if original_info['bitrate'] != 'unknown':
         print(f"    Bitrate:     {original_info['bitrate']/1000:.1f} kbps")
 
-    print(
-        f"    Size:        {human_size(original_size):<20} {human_size(new_size)}")
+    print(f"    Size:        {human_size(original_size):<20} {human_size(new_size)}")
 
     # Space savings
     savings = original_size - new_size
@@ -513,8 +590,7 @@ def print_transcoding_summary(index: int, total: int, original_info: Dict,
     savings_str = f"{human_size(abs(savings))} ({abs(savings_pct):.1f}%)"
 
     if is_larger:
-        print(
-            f"    Space saved: {colorize('-' + savings_str + ' (larger)', Colors.MAGENTA)}")
+        print(f"    Space saved: {colorize('-' + savings_str + ' (larger)', Colors.MAGENTA)}")
     else:
         print(f"    Space saved: {colorize(savings_str, Colors.GREEN)}")
 
@@ -530,11 +606,10 @@ def print_transcoding_summary(index: int, total: int, original_info: Dict,
 
 
 def transcode_video(input_file: Path, work_dir: Path, index: int, total: int,
-                    file_logger: logging.Logger, console_logger: logging.Logger,
-                    state: TranscodeState) -> Tuple[bool, Optional[str], bool, int, Optional[Path]]:
-    """Transcode a single video file with special character handling."""
-    file_logger.info(
-        f"Starting transcoding of file #{index}/{total}: {input_file.name}")
+                   file_logger: logging.Logger, console_logger: logging.Logger,
+                   state: TranscodeState) -> Tuple[bool, Optional[str], bool, int, Optional[Path]]:
+    """Transcode a single video file with timeout handling."""
+    file_logger.info(f"Starting transcoding of file #{index}/{total}: {input_file.name}")
     console_logger.info(f"[{index}/{total}] ▶️  Starting transcoding")
     print(colorize(f"[{index}/{total}] ▶️  Starting transcoding", Colors.BLUE))
 
@@ -572,25 +647,43 @@ def transcode_video(input_file: Path, work_dir: Path, index: int, total: int,
         cmd = create_ffmpeg_command(input_file, temp_output)
 
         # Log the command for debugging (with safe filenames only)
-        file_logger.debug(
-            f"FFmpeg command: {' '.join(cmd[:3])} ... [paths] ... {' '.join(cmd[-5:])}")
+        file_logger.debug(f"FFmpeg command: {' '.join(cmd[:3])} ... [paths] ... {' '.join(cmd[-5:])}")
 
-        # Start process with proper error capture
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            shell=False  # Important: never use shell=True with user input
-        )
+        # Start process with proper setup for killing
+        if os.name != 'nt':
+            # On Unix, create a new process group
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                shell=False,
+                preexec_fn=os.setsid  # Create new process group
+            )
+        else:
+            # On Windows, use default behavior
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                shell=False
+            )
 
-        # Monitor progress
-        returncode, file_created, error_output = monitor_progress(
-            process, original_info['duration'], index, total, temp_output
+        # Monitor progress with timeout
+        returncode, file_created, error_output = monitor_progress_with_timeout(
+            process, original_info['duration'], index, total, temp_output, file_logger
         )
 
         if returncode != 0 or not file_created:
-            error_msg = f"Transcoding failed with code {returncode}"
+            error_msg = f"Transcoding failed"
+            if returncode == -1:
+                error_msg = "Timeout: No output file created"
+            elif returncode == -2:
+                error_msg = "Timeout: Output file stopped growing"
+            elif returncode != 0:
+                error_msg += f" with code {returncode}"
+
             if not file_created:
                 error_msg += ", no output file created"
 
@@ -612,8 +705,7 @@ def transcode_video(input_file: Path, work_dir: Path, index: int, total: int,
         is_larger = new_size >= original_size
 
         # Print summary
-        print_transcoding_summary(
-            index, total, original_info, original_size, new_size, is_larger)
+        print_transcoding_summary(index, total, original_info, original_size, new_size, is_larger)
 
         return True, None, is_larger, new_size, temp_output
 
@@ -632,6 +724,9 @@ def categorize_error(error_message: str) -> str:
         ("Invalid data found", "Corrupted Video Data"),
         ("Conversion failed", "Encoder Error"),
         ("Out of memory", "Memory Error"),
+        ("Timeout: No output file created", "Timeout Error - Corrupted Input"),
+        ("Timeout: Output file stopped growing", "Timeout Error - Incomplete Input"),
+        ("No video stream found", "Invalid Video File"),
     ]
 
     if error_message:
@@ -646,8 +741,7 @@ def write_file_lists(state: TranscodeState, empty_dirs: List[Path]):
     """Write summary files based on state."""
     completed_files = state.get_completed_files()
 
-    successful = [f for f, status in completed_files.items()
-                  if status == "success"]
+    successful = [f for f, status in completed_files.items() if status == "success"]
     larger = [f for f, status in completed_files.items() if status == "larger"]
     failed = [(f, state.state["failed_reasons"].get(f, "Unknown error"))
               for f, status in completed_files.items() if status == "failed"]
@@ -661,15 +755,13 @@ def write_file_lists(state: TranscodeState, empty_dirs: List[Path]):
     if successful:
         with open("successful_transcodes.txt", 'w', encoding='utf-8') as f:
             f.write('\n'.join(successful))
-        print(colorize(
-            f"📝 Wrote {len(successful)} successful files to successful_transcodes.txt", Colors.GREEN))
+        print(colorize(f"📝 Wrote {len(successful)} successful files to successful_transcodes.txt", Colors.GREEN))
 
     # Larger files
     if larger:
         with open("larger_transcodes.txt", 'w', encoding='utf-8') as f:
             f.write('\n'.join(larger))
-        print(colorize(
-            f"📝 Wrote {len(larger)} larger files to larger_transcodes.txt", Colors.MAGENTA))
+        print(colorize(f"📝 Wrote {len(larger)} larger files to larger_transcodes.txt", Colors.MAGENTA))
 
     # Failed files
     if failed or empty_dirs:
@@ -694,13 +786,11 @@ def write_file_lists(state: TranscodeState, empty_dirs: List[Path]):
                     f.write("\n")
 
             if empty_dirs:
-                f.write(
-                    f"\nDIRECTORIES WITHOUT VIDEO FILES ({len(empty_dirs)}):\n")
+                f.write(f"\nDIRECTORIES WITHOUT VIDEO FILES ({len(empty_dirs)}):\n")
                 for dir_path in empty_dirs:
                     f.write(f"- {dir_path}\n")
 
-        print(
-            colorize(f"📝 Wrote failed files list to failed_transcodes.txt", Colors.YELLOW))
+        print(colorize(f"📝 Wrote failed files list to failed_transcodes.txt", Colors.YELLOW))
 
 
 def print_final_summary(stats: Dict, elapsed: float, log_file: str):
@@ -714,19 +804,16 @@ def print_final_summary(stats: Dict, elapsed: float, log_file: str):
     print("═" * 70)
 
     print(colorize("\n  RESULTS", Colors.BOLD))
-    print(
-        f"  ✅ Successfully transcoded (smaller): {stats['successful']} files")
+    print(f"  ✅ Successfully transcoded (smaller): {stats['successful']} files")
     print(f"  📊 Successfully transcoded (larger): {stats['larger']} files")
     print(f"  ❌ Failed to transcode: {stats['failed']} files")
 
     print(colorize("\n  SPACE SAVINGS", Colors.BOLD))
-    print(
-        f"  💾 Total original size: {human_size(stats['total_original_size'])}")
+    print(f"  💾 Total original size: {human_size(stats['total_original_size'])}")
     print(f"  💾 Total new size: {human_size(stats['total_new_size'])}")
 
     savings = stats['total_original_size'] - stats['total_new_size']
-    savings_pct = (savings / stats['total_original_size']
-                   * 100) if stats['total_original_size'] > 0 else 0
+    savings_pct = (savings / stats['total_original_size'] * 100) if stats['total_original_size'] > 0 else 0
     savings_text = f"  🔽 Total space saved: {human_size(abs(savings))} ({abs(savings_pct):.1f}%)"
     print(colorize(savings_text, Colors.GREEN if savings > 0 else Colors.RED))
 
@@ -735,8 +822,7 @@ def print_final_summary(stats: Dict, elapsed: float, log_file: str):
 
     if stats['successful'] + stats['larger'] > 0:
         avg_time = elapsed / (stats['successful'] + stats['larger'])
-        print(
-            f"  🕒 Average time per file: {int(avg_time/60)}m {int(avg_time % 60)}s")
+        print(f"  🕒 Average time per file: {int(avg_time/60)}m {int(avg_time%60)}s")
 
     print(colorize("\n  FILE LOCATIONS", Colors.BOLD))
     print(f"  📝 Log file: {log_file}")
@@ -759,10 +845,8 @@ def clean_work_directory(work_dir: Path, state: TranscodeState, file_logger: log
         try:
             # Check if this is the interrupted file
             if interrupted_temp and file.name == interrupted_temp:
-                file_logger.info(
-                    f"Removing interrupted file from work directory: {file.name}")
-                print(
-                    colorize(f"🔧 Removing interrupted file: {file.name}", Colors.YELLOW))
+                file_logger.info(f"Removing interrupted file from work directory: {file.name}")
+                print(colorize(f"🔧 Removing interrupted file: {file.name}", Colors.YELLOW))
 
             file.unlink()
             cleaned_count += 1
@@ -770,29 +854,35 @@ def clean_work_directory(work_dir: Path, state: TranscodeState, file_logger: log
             file_logger.error(f"Failed to remove work file {file.name}: {e}")
 
     if cleaned_count > 0:
-        print(colorize(
-            f"🔧 Cleaned {cleaned_count} file(s) from work directory", Colors.YELLOW))
+        print(colorize(f"🔧 Cleaned {cleaned_count} file(s) from work directory", Colors.YELLOW))
 
 
 def main():
     # Parse arguments
-    parser = argparse.ArgumentParser(
-        description="Video Transcoder Script with Resume Capability")
-    parser.add_argument(
-        "input_dir", help="Input directory containing video files")
+    parser = argparse.ArgumentParser(description="Video Transcoder Script with Resume Capability")
+    parser.add_argument("input_dir", help="Input directory containing video files")
     parser.add_argument("-s", "--success_dir", default="transcoded_success",
-                        help="Output directory for successfully transcoded files")
+                       help="Output directory for successfully transcoded files")
     parser.add_argument("-e", "--error_dir", default="transcoded_error",
-                        help="Output directory for files that failed transcoding")
+                       help="Output directory for files that failed transcoding")
     parser.add_argument("-l", "--larger_dir", default="transcoded_larger",
-                        help="Output directory for transcoded files larger than original")
+                       help="Output directory for transcoded files larger than original")
     parser.add_argument("-w", "--work_dir", default="work_in_progress",
-                        help="Temporary directory for files being processed")
+                       help="Temporary directory for files being processed")
     parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Enable verbose logging")
+                       help="Enable verbose logging")
     parser.add_argument("--fresh", action="store_true",
-                        help="Start fresh, ignoring any previous state")
+                       help="Start fresh, ignoring any previous state")
+    parser.add_argument("--file-timeout", type=int, default=FILE_CREATION_TIMEOUT,
+                       help=f"Timeout in seconds for output file creation (default: {FILE_CREATION_TIMEOUT})")
+    parser.add_argument("--growth-timeout", type=int, default=FILE_GROWTH_TIMEOUT,
+                       help=f"Timeout in seconds if file stops growing (default: {FILE_GROWTH_TIMEOUT})")
     args = parser.parse_args()
+
+    # Update timeout values if provided
+    global FILE_CREATION_TIMEOUT, FILE_GROWTH_TIMEOUT
+    FILE_CREATION_TIMEOUT = args.file_timeout
+    FILE_GROWTH_TIMEOUT = args.growth_timeout
 
     # Setup
     file_logger, console_logger, log_file = setup_logging()
@@ -814,8 +904,7 @@ def main():
     # Setup directories
     input_dir = Path(args.input_dir)
     if not input_dir.is_dir():
-        print(
-            colorize(f"❌ Input directory not found: {input_dir}", Colors.RED))
+        print(colorize(f"❌ Input directory not found: {input_dir}", Colors.RED))
         sys.exit(1)
 
     success_dir = Path(args.success_dir)
@@ -834,25 +923,24 @@ def main():
     resumed = False
     if not args.fresh and state.load(str(input_dir.absolute())):
         resumed = True
-        print(colorize(
-            "📂 Found previous state file - resuming batch operation", Colors.CYAN))
+        print(colorize("📂 Found previous state file - resuming batch operation", Colors.CYAN))
 
         stats = state.get_statistics()
-        print(
-            f"    Previously processed: {stats['processed']}/{stats['total_files']} files")
-        print(
-            f"    Successful: {stats['successful']}, Larger: {stats['larger']}, Failed: {stats['failed']}")
+        print(f"    Previously processed: {stats['processed']}/{stats['total_files']} files")
+        print(f"    Successful: {stats['successful']}, Larger: {stats['larger']}, Failed: {stats['failed']}")
 
         # Clean work directory if there was an interrupted file
         if state.state["in_progress"]:
-            print(colorize(
-                f"⚠️  Found interrupted file: {Path(state.state['in_progress']).name}", Colors.YELLOW))
+            print(colorize(f"⚠️  Found interrupted file: {Path(state.state['in_progress']).name}", Colors.YELLOW))
             clean_work_directory(work_dir, state, file_logger)
 
         print("")
     elif args.fresh and state.state_file.exists():
         state.clear()
         print(colorize("🗑️  Cleared previous state - starting fresh", Colors.YELLOW))
+
+    # Print timeout settings
+    print(f"⏱️  Timeouts: {FILE_CREATION_TIMEOUT}s for file creation, {FILE_GROWTH_TIMEOUT}s for file growth")
 
     # Find video files
     print(colorize("🔍 Searching for video files...", Colors.BLUE))
@@ -861,31 +949,25 @@ def main():
     if not video_files:
         print(colorize("❌ No video files found.", Colors.RED))
         if empty_dirs:
-            print(colorize(
-                f"📁 Found {len(empty_dirs)} directories without videos", Colors.YELLOW))
+            print(colorize(f"📁 Found {len(empty_dirs)} directories without videos", Colors.YELLOW))
             write_file_lists(state, empty_dirs)
         sys.exit(0)
 
     # Filter out already processed files if resuming
     if resumed:
         original_count = len(video_files)
-        video_files = [
-            f for f in video_files if not state.is_processed(str(f))]
+        video_files = [f for f in video_files if not state.is_processed(str(f))]
         skipped = original_count - len(video_files)
         if skipped > 0:
-            print(
-                colorize(f"⏭️  Skipping {skipped} already processed files", Colors.CYAN))
+            print(colorize(f"⏭️  Skipping {skipped} already processed files", Colors.CYAN))
 
-    print(
-        colorize(f"📁 Found {len(video_files)} video files to transcode", Colors.GREEN))
+    print(colorize(f"📁 Found {len(video_files)} video files to transcode", Colors.GREEN))
     if empty_dirs:
-        print(colorize(
-            f"📁 Found {len(empty_dirs)} directories without videos", Colors.YELLOW))
+        print(colorize(f"📁 Found {len(empty_dirs)} directories without videos", Colors.YELLOW))
 
     # Initialize state if not resumed
     if not resumed:
-        total_files = len(video_files) + (state.get_statistics()
-                                          ['processed'] if resumed else 0)
+        total_files = len(video_files) + (state.get_statistics()['processed'] if resumed else 0)
         state.initialize(str(input_dir.absolute()), total_files)
 
     # Clean work directory if not resuming
@@ -918,7 +1000,7 @@ def main():
         current_index = current_stats['processed'] + 1
 
         print(colorize(f"\n[{current_index}/{total_count}] Processing {current_index/total_count*100:.1f}% complete",
-                       Colors.BOLD + Colors.BLUE))
+                      Colors.BOLD + Colors.BLUE))
         print("─" * 50)
 
         # Get original size
@@ -944,16 +1026,14 @@ def main():
             try:
                 shutil.move(str(temp_output), str(destination))
                 print(colorize(f"🔄 Moved to {status} directory",
-                               Colors.MAGENTA if is_larger else Colors.GREEN))
+                             Colors.MAGENTA if is_larger else Colors.GREEN))
 
                 # Mark as completed
-                state.mark_completed(
-                    str(video_file), status, None, original_size, new_size)
+                state.mark_completed(str(video_file), status, None, original_size, new_size)
 
             except OSError as e:
                 # Mark as failed if move fails
-                state.mark_completed(
-                    str(video_file), "failed", f"Move failed: {e}")
+                state.mark_completed(str(video_file), "failed", f"Move failed: {e}")
                 if temp_output.exists():
                     temp_output.unlink()
         else:
@@ -965,8 +1045,7 @@ def main():
                 pass
 
             # Mark as failed
-            state.mark_completed(str(video_file), "failed",
-                                 error or "Unknown error")
+            state.mark_completed(str(video_file), "failed", error or "Unknown error")
 
         # Update current stats for next iteration
         current_stats = state.get_statistics()
@@ -985,7 +1064,7 @@ def main():
 
     # Final logging
     file_logger.info(f"Batch complete: {final_stats['successful']} successful, "
-                     f"{final_stats['larger']} larger, {final_stats['failed']} failed")
+                    f"{final_stats['larger']} larger, {final_stats['failed']} failed")
 
 
 if __name__ == "__main__":
