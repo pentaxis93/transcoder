@@ -411,7 +411,7 @@ def create_ffmpeg_command(input_path: Path, output_path: Path) -> List[str]:
         "-c:v", "libx265",
         "-preset", "slower",
         "-x265-params", "limit-refs=3:no-amp=1:rd=4:aq-mode=3:bframes=5:psy-rd=1.0:psy-rdoq=2.0",
-        "-crf", "25",
+        "-crf", "22",
         "-vf", "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,setsar=1:1",
         "-c:a", "aac",
         "-b:a", "64k",
