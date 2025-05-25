@@ -858,6 +858,9 @@ def clean_work_directory(work_dir: Path, state: TranscodeState, file_logger: log
 
 
 def main():
+    # Declare globals at the beginning
+    global FILE_CREATION_TIMEOUT, FILE_GROWTH_TIMEOUT
+
     # Parse arguments
     parser = argparse.ArgumentParser(description="Video Transcoder Script with Resume Capability")
     parser.add_argument("input_dir", help="Input directory containing video files")
@@ -880,7 +883,6 @@ def main():
     args = parser.parse_args()
 
     # Update timeout values if provided
-    global FILE_CREATION_TIMEOUT, FILE_GROWTH_TIMEOUT
     FILE_CREATION_TIMEOUT = args.file_timeout
     FILE_GROWTH_TIMEOUT = args.growth_timeout
 
