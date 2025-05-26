@@ -411,7 +411,7 @@ def create_ffmpeg_command(input_path: Path, output_path: Path) -> List[str]:
         "-c:v", "libx265",
         "-preset", "slower",
         "-x265-params", "limit-refs=3:no-amp=1:rd=4:aq-mode=3:bframes=5:psy-rd=1.0:psy-rdoq=2.0",
-        "-crf", "22",
+        "-crf", "28",
         "-vf", "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,setsar=1:1",
         "-c:a", "aac",
         "-b:a", "64k",
@@ -612,10 +612,9 @@ def print_transcoding_summary(index: int, total: int, original_info: Dict,
     # Encoding settings
     print(f"\n    {colorize('ENCODING SETTINGS:', Colors.CYAN)}")
     print("    Video codec:   H.265/HEVC")
-    print("    Quality:       CRF 25")
+    print("    Quality:       CRF 28")
     print("    Preset:        slower")
     print("    Resolution:    max 1080p")
-    print("    Framerate:     24 fps")
     print("    Audio:         64k mono AAC")
     print("─" * 50)
 
