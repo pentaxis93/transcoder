@@ -31,6 +31,7 @@ STATE_FILE = "transcode_state.json"
 FILE_CREATION_TIMEOUT = 60  # seconds to wait for output file creation
 FILE_GROWTH_TIMEOUT = 120  # seconds to wait if file stops growing
 GROWTH_CHECK_INTERVAL = 5  # seconds between file growth checks
+ZERO_BYTE_TIMEOUT = 60  # seconds to wait for zero byte file
 
 # ANSI color codes
 
@@ -435,6 +436,7 @@ def monitor_progress_with_timeout(process: subprocess.Popen, duration: float, in
     last_size_check = start_time
     last_file_size = 0
     file_created = False
+    file_created_time = None  # Track when file was first created
     no_growth_count = 0
     term_width = shutil.get_terminal_size().columns
 
@@ -466,12 +468,35 @@ def monitor_progress_with_timeout(process: subprocess.Popen, duration: float, in
             last_size_check = current_time
 
             if output_path.exists():
-                file_created = True
+                if not file_created:
+                    file_created = True
+                    file_created_time = current_time
+
                 try:
                     current_file_size = output_path.stat().st_size
 
-                    # Check if file is growing
-                    if current_file_size == last_file_size and current_file_size > 0:
+                    # Special handling for files that remain at 0 bytes
+                    if current_file_size == 0 and file_created_time:
+                        time_at_zero = current_time - file_created_time
+                        # Use a shorter timeout for 0-byte files (half of normal growth timeout)
+                        zero_byte_timeout = FILE_GROWTH_TIMEOUT / 2
+
+                        if time_at_zero >= zero_byte_timeout:
+                            file_logger.warning(
+                                f"Output file remains at 0 bytes after {zero_byte_timeout}s, terminating process")
+                            print(
+                                f"\r{colorize(f'[{index}/{total}] ⚠️  Timeout: Output file remains at 0 bytes', Colors.RED):<{term_width-1}}")
+
+                            # Kill the process
+                            kill_process_tree(process.pid)
+
+                            # Wait a bit for process to die
+                            time.sleep(2)
+
+                            return -3, True, f"Timeout: Output file remains at 0 bytes after {zero_byte_timeout} seconds"
+
+                    # Check if file is growing (for non-zero files)
+                    elif current_file_size == last_file_size and current_file_size > 0:
                         no_growth_count += 1
 
                         # Check for growth timeout
@@ -505,7 +530,10 @@ def monitor_progress_with_timeout(process: subprocess.Popen, duration: float, in
             if output_path.exists():
                 try:
                     file_size = output_path.stat().st_size
-                    file_status = f"output: {human_size(file_size)}"
+                    if file_size == 0:
+                        file_status = "output: 0 bytes ⚠️"
+                    else:
+                        file_status = f"output: {human_size(file_size)}"
                 except OSError:
                     pass
 
@@ -565,6 +593,8 @@ def monitor_progress_with_timeout(process: subprocess.Popen, duration: float, in
         final_msg = f"[{index}/{total}] Terminated due to file creation timeout"
     elif returncode == -2:
         final_msg = f"[{index}/{total}] Terminated due to file growth timeout"
+    elif returncode == -3:
+        final_msg = f"[{index}/{total}] Terminated due to 0-byte file timeout"
     else:
         final_msg = f"[{index}/{total}] Encoding completed in {int(total_time/60)}m {int(total_time % 60)}s"
 
@@ -697,6 +727,8 @@ def transcode_video(input_file: Path, work_dir: Path, index: int, total: int,
                 error_msg = "Timeout: No output file created"
             elif returncode == -2:
                 error_msg = "Timeout: Output file stopped growing"
+            elif returncode == -3:
+                error_msg = "Timeout: Output file remains at 0 bytes"
             elif returncode != 0:
                 error_msg += f" with code {returncode}"
 
@@ -744,6 +776,8 @@ def categorize_error(error_message: str) -> str:
         ("Timeout: No output file created", "Timeout Error - Corrupted Input"),
         ("Timeout: Output file stopped growing",
          "Timeout Error - Incomplete Input"),
+        ("Timeout: Output file remains at 0 bytes",
+         "Timeout Error - Corrupted Input (0-byte output)"),
         ("No video stream found", "Invalid Video File"),
     ]
 
@@ -889,7 +923,7 @@ def clean_work_directory(work_dir: Path, state: TranscodeState, file_logger: log
 
 def main():
     # Declare globals at the beginning
-    global FILE_CREATION_TIMEOUT, FILE_GROWTH_TIMEOUT
+    global FILE_CREATION_TIMEOUT, FILE_GROWTH_TIMEOUT, ZERO_BYTE_TIMEOUT
 
     # Parse arguments
     parser = argparse.ArgumentParser(
@@ -912,11 +946,14 @@ def main():
                         help=f"Timeout in seconds for output file creation (default: {FILE_CREATION_TIMEOUT})")
     parser.add_argument("--growth-timeout", type=int, default=FILE_GROWTH_TIMEOUT,
                         help=f"Timeout in seconds if file stops growing (default: {FILE_GROWTH_TIMEOUT})")
+    parser.add_argument("--zero-timeout", type=int, default=ZERO_BYTE_TIMEOUT,
+                        help=f"Timeout in seconds if file remains at 0 bytes (default: {ZERO_BYTE_TIMEOUT})")
     args = parser.parse_args()
 
     # Update timeout values if provided
     FILE_CREATION_TIMEOUT = args.file_timeout
     FILE_GROWTH_TIMEOUT = args.growth_timeout
+    ZERO_BYTE_TIMEOUT = args.zero_timeout
 
     # Setup
     file_logger, console_logger, log_file = setup_logging()
