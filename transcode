@@ -399,11 +399,14 @@ def verify_input_file(file_path: Path, file_logger: logging.Logger) -> Tuple[boo
     return False, "No video stream found"
 
 
-def create_ffmpeg_command(input_path: Path, output_path: Path) -> List[str]:
+def create_ffmpeg_command(input_path: Path, output_path: Path, cpu_threads: Optional[int] = None) -> List[str]:
     """Create the ffmpeg encoding command with proper path handling."""
     # Normalize paths for subprocess
     input_str = normalize_path(input_path)
     output_str = normalize_path(output_path)
+
+    # Default to 0 (auto-detect) if not specified
+    threads = str(cpu_threads) if cpu_threads is not None else "0"
 
     return [
         "ffmpeg", "-y",
@@ -422,7 +425,7 @@ def create_ffmpeg_command(input_path: Path, output_path: Path) -> List[str]:
         "-profile:v", "main", "-level", "4.1",
         "-movflags", "+faststart",
         "-metadata", "title=", "-metadata", "comment=",
-        "-threads", "0",
+        "-threads", threads,
         "-v", "warning",
         output_str
     ]
@@ -651,7 +654,8 @@ def print_transcoding_summary(index: int, total: int, original_info: Dict,
 
 def transcode_video(input_file: Path, work_dir: Path, index: int, total: int,
                     file_logger: logging.Logger, console_logger: logging.Logger,
-                    state: TranscodeState) -> Tuple[bool, Optional[str], bool, int, Optional[Path]]:
+                    state: TranscodeState, cpu_threads: Optional[int] = None,
+                    cpu_limit: Optional[int] = None, nice_value: Optional[int] = None) -> Tuple[bool, Optional[str], bool, int, Optional[Path]]:
     """Transcode a single video file with timeout handling."""
     file_logger.info(
         f"Starting transcoding of file #{index}/{total}: {input_file.name}")
@@ -689,17 +693,37 @@ def transcode_video(input_file: Path, work_dir: Path, index: int, total: int,
         state.mark_in_progress(str(input_file), temp_output.name)
 
         # Create and run ffmpeg command
-        cmd = create_ffmpeg_command(input_file, temp_output)
+        cmd = create_ffmpeg_command(input_file, temp_output, cpu_threads)
 
         # Log the command for debugging (with safe filenames only)
         file_logger.debug(
             f"FFmpeg command: {' '.join(cmd[:3])} ... [paths] ... {' '.join(cmd[-5:])}")
 
+        # Build the final command with CPU limiting if requested
+        final_cmd = cmd
+        
+        # Apply nice value (Unix only)
+        if os.name != 'nt':
+            final_cmd = ["nice", "-n", str(nice_value)] + cmd
+            file_logger.info(f"Using nice value: {nice_value}")
+        
+        # Apply cpulimit if specified (Unix only)
+        if cpu_limit is not None and os.name != 'nt':
+            # Check if cpulimit is available
+            try:
+                subprocess.run(["which", "cpulimit"], capture_output=True, check=True)
+                # cpulimit needs to wrap the entire command
+                final_cmd = ["cpulimit", "-l", str(cpu_limit), "--"] + final_cmd
+                file_logger.info(f"Using cpulimit: {cpu_limit}%")
+            except subprocess.SubprocessError:
+                file_logger.warning("cpulimit not found, ignoring CPU limit request")
+                console_logger.warning("⚠️  cpulimit not installed - install it to use --cpu-limit")
+
         # Start process with proper setup for killing
         if os.name != 'nt':
             # On Unix, create a new process group
             process = subprocess.Popen(
-                cmd,
+                final_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -709,7 +733,7 @@ def transcode_video(input_file: Path, work_dir: Path, index: int, total: int,
         else:
             # On Windows, use default behavior
             process = subprocess.Popen(
-                cmd,
+                final_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -948,6 +972,12 @@ def main():
                         help=f"Timeout in seconds if file stops growing (default: {FILE_GROWTH_TIMEOUT})")
     parser.add_argument("--zero-timeout", type=int, default=ZERO_BYTE_TIMEOUT,
                         help=f"Timeout in seconds if file remains at 0 bytes (default: {ZERO_BYTE_TIMEOUT})")
+    parser.add_argument("--cpu-limit", type=int, metavar="PERCENT",
+                        help="Limit CPU usage to specified percentage (requires cpulimit)")
+    parser.add_argument("--threads", type=int,
+                        help="Number of threads for ffmpeg to use (default: auto-detect)")
+    parser.add_argument("--nice", type=int, choices=range(-20, 20), default=19,
+                        help="Nice value for process priority (-20 to 19, higher = lower priority, default: 19)")
     args = parser.parse_args()
 
     # Update timeout values if provided
@@ -1018,6 +1048,20 @@ def main():
     # Print timeout settings
     print(
         f"⏱️  Timeouts: {FILE_CREATION_TIMEOUT}s for file creation, {FILE_GROWTH_TIMEOUT}s for file growth")
+    
+    # Print CPU limiting settings
+    cpu_settings = []
+    if args.threads:
+        cpu_settings.append(f"threads={args.threads}")
+    else:
+        cpu_settings.append("threads=auto")
+    
+    cpu_settings.append(f"nice={args.nice}")
+    
+    if args.cpu_limit:
+        cpu_settings.append(f"cpu_limit={args.cpu_limit}%")
+    
+    print(colorize(f"🔧 CPU settings: {', '.join(cpu_settings)}", Colors.CYAN))
 
     # Find video files
     print(colorize("🔍 Searching for video files...", Colors.BLUE))
@@ -1094,7 +1138,8 @@ def main():
 
         # Transcode
         success, error, is_larger, new_size, temp_output = transcode_video(
-            video_file, work_dir, current_index, total_count, file_logger, console_logger, state
+            video_file, work_dir, current_index, total_count, file_logger, console_logger, state,
+            cpu_threads=args.threads, cpu_limit=args.cpu_limit, nice_value=args.nice
         )
 
         if success and temp_output:
