@@ -960,7 +960,7 @@ def main():
                         help="Output directory for files that failed transcoding")
     parser.add_argument("-l", "--larger_dir", default="transcoded_larger",
                         help="Output directory for transcoded files larger than original")
-    parser.add_argument("-w", "--work_dir", default="work_in_progress",
+    parser.add_argument("-w", "--work_dir", default="transcoder_wip",
                         help="Temporary directory for files being processed")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose logging")
